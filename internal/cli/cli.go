@@ -53,6 +53,7 @@ func Run(arguments []string, stdout, stderr io.Writer) int {
 		"drop":   runDrop,
 		"renew":  runRenew,
 		"init":   runInit,
+		"guard":  runGuard,
 	}
 
 	if handler, found := handlers[command]; found {
@@ -88,6 +89,7 @@ func usage(out io.Writer) {
   baton drop <container>    release a hand-taken baton
 
   baton init <container>    install the supervisor so handoffs skip a restart
+  baton guard               PreToolUse hook: refuse container work without the baton
 
 Every command takes --tree to name a worktree explicitly. It defaults to the
 worktree containing the current directory.
