@@ -85,13 +85,30 @@ link_node_modules() {
     if [ "$target" = "$store" ]; then
         return 0
     fi
+
+    # Worktrees are often set up by hand with a node_modules symlink pointing at
+    # the main clone. Those come in three flavours — relative, /code-absolute,
+    # and host-absolute — and only the relative one resolves on both sides of
+    # the container boundary. They are also frequently wrong: a tree with its
+    # own lockfile ends up resolving the main clone's dependencies. Replace any
+    # such link with a real mount point for the store that matches this tree's
+    # lockfile, recording what was there in case it needs putting back.
+    if [ -L "$target" ]; then
+        local previous
+        previous=$(readlink "$target")
+        log "replacing the node_modules symlink in $tree (was -> $previous)"
+        printf '%s\t%s\n' "$tree" "$previous" >>"$CONTROL/replaced-symlinks.log"
+        rm -f "$target"
+    fi
+
     mkdir -p "$target"
     if ! is_mounted "$target"; then
+        local error
         log "mounting shared node_modules ($hash) into $tree"
-        mount --bind "$store" "$target" || {
-            log "bind mount failed — is the container privileged?"
+        if ! error=$(mount --bind "$store" "$target" 2>&1); then
+            log "bind mount failed: $error"
             return 1
-        }
+        fi
     fi
 }
 
