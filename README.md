@@ -78,6 +78,74 @@ A session that was displaced finds out the next time it runs `baton check`,
 which is why the rule matters: **check after every test batch, and throw the
 results away if the answer is no.**
 
+## Making it enforced rather than polite
+
+A rule that sessions should take the baton first gets followed most of the time
+and forgotten the rest, and the failure is silent — the tests pass, just against
+the wrong branch. `baton guard` closes that gap as a Claude Code PreToolUse hook.
+Add to `.claude/settings.local.json`:
+
+```json
+"hooks": {
+  "PreToolUse": [
+    {
+      "matcher": "Bash|mcp__playwright__.*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "/usr/local/bin/baton guard --container cmp-client",
+          "timeout": 10,
+          "statusMessage": "Checking the baton"
+        }
+      ]
+    }
+  ]
+}
+```
+
+It refuses Playwright calls and container-bound shell commands from a worktree
+that does not hold the baton, and tells the caller what to run instead.
+
+It fails **open** on infrastructure trouble and **closed** only on a real
+violation. An unreadable payload, an unresolvable worktree, an unreachable
+Docker daemon, or a container nobody has queued for all let the call through. It
+denies only when the state file positively says somebody else holds the baton,
+or when the holder's own tree is not what the container is serving. A guard that
+blocked everything whenever it got confused would be worse than no guard.
+
+baton's own commands are never matched — guarding them would deadlock a session
+that is being told to take the baton.
+
+## Menu bar app
+
+```bash
+make menubar-install      # /Applications/Baton.app
+```
+
+An agent app: menu bar only, no Dock icon. It shows the current holder and how
+many are waiting, and gives you Take over / Release without a terminal.
+
+```
+◉ pr-12254-head +2      held, two waiting
+⚠ pr-12254-head         holds the lock, container is serving someone else
+✋ CCP-17161-re          taken by hand, queue frozen
+○ free                  nobody has it
+```
+
+It shells out to `baton status --json` every two seconds rather than reading the
+state file, so there is only ever one implementation of the rules.
+
+If it looks wrong, ask it what it sees:
+
+```bash
+cd menubar
+swift run baton-probe              # what the menu bar is rendering, same code path
+swift run baton-probe --selftest   # check the decoding against captured CLI output
+```
+
+The self-check is a plain binary rather than XCTest so it runs on a machine with
+Command Line Tools and no Xcode, where SwiftPM cannot see XCTest.
+
 ## Commands
 
 | Command | What it does |
@@ -91,6 +159,7 @@ results away if the answer is no.**
 | `baton grab <container>` | Take over by hand and pin it. |
 | `baton drop <container>` | Release a hand-taken baton. |
 | `baton init <container>` | Install the supervisor. |
+| `baton guard` | PreToolUse hook. Reads a payload on stdin, allows or denies. |
 
 Every command takes `--tree` to name a worktree. It defaults to the worktree
 containing the current directory.
@@ -134,7 +203,16 @@ internal/store         state file and locking
 internal/tree          worktree resolution
 internal/docker        container inspection and the swap
 internal/supervisor    the script that runs inside the container
+internal/cli           subcommands, including the guard hook
+
+menubar/
+  Sources/BatonCore    CLI client and the menu bar line, no UI
+  Sources/BatonMenuBar the SwiftUI agent app
+  Sources/BatonProbe   diagnostics and the self-check
 ```
 
 `internal/core` is where the interesting decisions live and it has no
 dependencies, so the rules can be read and tested on their own.
+
+The Go CLI has no external dependencies and the Swift app has none beyond the
+system frameworks. `baton status --json` is the only interface between them.
