@@ -6,15 +6,42 @@ import SwiftUI
 /// Ordered by what someone opening this actually wants to know: who has it, is
 /// the container really on their branch, who is waiting, what can I do. Anything
 /// that only matters when something is wrong stays hidden until it is.
-/// Deliberately not wrapped in a ScrollView.
 ///
-/// A menu bar window sizes itself to its content, and a ScrollView has no
-/// intrinsic height — it takes whatever it is offered, which in a self-sizing
-/// window is nothing, and the popover collapses to a sliver. `maxHeight` caps a
-/// size, it does not supply one. If the content ever needs to scroll, the
-/// height has to be measured and set explicitly rather than left to the
-/// ScrollView to decide.
+/// It sizes to its content. Keeping it anchored to the menu bar while that size
+/// changes is NSPopover's job — see StatusItemController for why SwiftUI's own
+/// MenuBarExtra window could not do it.
 struct MenuContent: View {
+    let monitor: BatonMonitor
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MenuBody(monitor: monitor)
+                .padding(14)
+
+            Divider()
+
+            Footer(monitor: monitor)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+        }
+        .frame(width: Design.popoverWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        // The panel hosting this is transparent, so the material and the
+        // rounded edge belong to the content rather than the window.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.separator.opacity(0.7), lineWidth: 0.5)
+        )
+    }
+}
+
+/// Everything above the footer.
+///
+/// Split out because ImageRenderer lays a ScrollView out but never rasterises
+/// its contents, so a snapshot of the whole popover comes out blank. Snapshots
+/// render this.
+struct MenuBody: View {
     let monitor: BatonMonitor
 
     var body: some View {
@@ -40,12 +67,9 @@ struct MenuContent: View {
                 }
             }
 
-            Divider()
-            Footer(monitor: monitor)
+            Spacer(minLength: 0)
         }
-        .padding(14)
-        .frame(width: Design.popoverWidth)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

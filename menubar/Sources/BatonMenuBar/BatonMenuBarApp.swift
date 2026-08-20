@@ -1,29 +1,36 @@
+import AppKit
 import BatonCore
 import SwiftUI
 
 @main
 struct BatonMenuBarApp: App {
-    @State private var monitor = BatonMonitor()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
-    init() {
+    var body: some Scene {
+        // The app has no windows of its own; the status item owns everything.
+        // Settings is the smallest scene that satisfies the App protocol.
+        Settings { EmptyView() }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var monitor: BatonMonitor?
+    private var statusItem: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
         // --snapshot <dir> renders the popover to PNGs and exits, so the layout
         // can be reviewed without screen recording permission.
         let arguments = CommandLine.arguments
         if let flag = arguments.firstIndex(of: "--snapshot"), flag + 1 < arguments.count {
-            exit(MainActor.assumeIsolated { Snapshot.run(into: arguments[flag + 1]) })
+            exit(Snapshot.run(into: arguments[flag + 1]))
         }
         #endif
-        monitor.start()
-    }
 
-    var body: some Scene {
-        // The title-and-symbol initialiser rather than a custom label view:
-        // MenuBarExtra only reliably renders Text or Image in the bar itself,
-        // and a composed view can silently come out blank.
-        MenuBarExtra(monitor.summary.text, systemImage: monitor.summary.symbol) {
-            MenuContent(monitor: monitor)
-        }
-        .menuBarExtraStyle(.window)
+        let monitor = BatonMonitor()
+        monitor.start()
+        self.monitor = monitor
+        statusItem = StatusItemController(monitor: monitor)
     }
 }

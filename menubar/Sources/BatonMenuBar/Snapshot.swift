@@ -36,7 +36,9 @@ enum Snapshot {
             for scheme in [ColorScheme.light, .dark] {
                 let monitor = BatonMonitor(preview: containers,
                                            busy: name == "09-busy" ? "Taking over web" : nil)
-                let view = MenuContent(monitor: monitor)
+                let view = MenuBody(monitor: monitor)
+                    .padding(14)
+                    .frame(width: Design.popoverWidth)
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 

@@ -10,6 +10,7 @@ import SwiftUI
 enum Design {
     static let popoverWidth: CGFloat = 320
 
+
     static let corner: CGFloat = 8
     static let rowSpacing: CGFloat = 6
     static let sectionSpacing: CGFloat = 14
