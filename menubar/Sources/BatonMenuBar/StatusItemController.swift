@@ -31,6 +31,10 @@ final class StatusItemController: NSObject {
 
         statusItem.button?.target = self
         statusItem.button?.action = #selector(toggle)
+        presenter.onHide = { [weak self] in
+            self?.monitor.menuClosed()
+            self?.resizeWhileOpen?.cancel()
+        }
         render()
         watchSummary()
 
@@ -56,10 +60,13 @@ final class StatusItemController: NSObject {
     @objc private func toggle() {
         if presenter.isVisible {
             presenter.hide()
-            resizeWhileOpen?.cancel()
             return
         }
-        monitor.refresh()
+        // The panel's SwiftUI tree is built once and only ordered out when it
+        // closes, so onAppear fires a single time for the life of the app.
+        // Telling the monitor the panel is open is what keeps its contents
+        // current instead of frozen at first launch.
+        monitor.menuOpened()
         presenter.show(under: statusItem.button)
         Diagnostics.log("opened anchor=\(statusItem.button?.window?.frame.debugDescription ?? "none")")
         followContentSize()

@@ -70,16 +70,40 @@ final class BatonMonitor {
             case .failure(let failure):
                 lastError = failure.message
             }
+            if menuIsOpen {
+                for container in containers { loadWorktrees(for: container.container) }
+            }
         }
     }
 
-    /// Worktrees each container can be handed to, refreshed when the menu opens
-    /// rather than on the poll — the list changes rarely and costs a git call.
+    /// Worktrees each container can be handed to.
     private(set) var worktrees: [String: [WorktreeOption]] = [:]
+
+    /// True while the panel is on screen.
+    ///
+    /// Worktree lists are only polled then. They cost a git call per container
+    /// and nothing can see them while the panel is shut, but once it is open
+    /// they have to keep up: branches get switched and worktrees get added
+    /// while the app is running, and a list loaded once at launch would still
+    /// be showing the branch each tree was on that morning.
+    private var menuIsOpen = false
+
+    func menuOpened() {
+        menuIsOpen = true
+        refresh()
+    }
+
+    func menuClosed() {
+        menuIsOpen = false
+    }
 
     func loadWorktrees(for container: String) {
         Task {
             let found = await BatonClient.fetchTrees(container: container)
+            // An empty result means the CLI could not answer — Docker down, or
+            // the container gone. Keeping the last known list beats blanking
+            // the menu over a hiccup, and the main clone guarantees a real
+            // answer is never empty.
             if !found.isEmpty { worktrees[container] = found }
         }
     }

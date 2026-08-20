@@ -11,6 +11,7 @@ import (
 
 	"baton/internal/docker"
 	"baton/internal/store"
+	"baton/internal/tree"
 )
 
 // Report is the machine-readable view of one container. The menu bar app reads
@@ -151,7 +152,7 @@ func gatherReport(state *store.State, name string, now time.Time) Report {
 	if containerState.Holder != nil {
 		holder := containerState.Holder
 		entry.Holder = &HolderReport{
-			Label:   holder.Label,
+			Label:   currentLabel(holder.Tree, holder.Label),
 			Tree:    holder.Tree,
 			Kind:    string(holder.Kind),
 			HeldFor: shortDuration(now.Sub(holder.Since)),
@@ -171,7 +172,7 @@ func gatherReport(state *store.State, name string, now time.Time) Report {
 	for index, waiter := range containerState.Queue {
 		entry.Queue = append(entry.Queue, QueueEntry{
 			Position: index + 1,
-			Label:    waiter.Label,
+			Label:    currentLabel(waiter.Tree, waiter.Label),
 			Tree:     waiter.Tree,
 			Waiting:  shortDuration(now.Sub(waiter.Since)),
 		})
@@ -281,6 +282,25 @@ func writeReport(out io.Writer, entry Report, queueOnly bool) {
 		}
 		fmt.Fprintf(out, "%s%d. %-19s waiting %s\n", label, waiter.Position, waiter.Label, waiter.Waiting)
 	}
+}
+
+// currentLabel reads a worktree's label now rather than trusting the one
+// recorded when it joined the queue.
+//
+// The tree path is the identity; the label is only a description of it, and
+// checking out a different branch changes that description. Storing it meant
+// status kept naming the branch a tree was on when it took the baton, which is
+// exactly the sort of quiet wrongness baton exists to prevent.
+//
+// recorded is the fallback, because Resolve walks up to the nearest worktree:
+// asked about a path that has since been removed it would answer with the main
+// clone, so anything but an exact match is treated as unresolvable.
+func currentLabel(path, recorded string) string {
+	resolved, err := tree.Resolve(path)
+	if err != nil || resolved.Path != path || resolved.Label == "" {
+		return recorded
+	}
+	return resolved.Label
 }
 
 // prettyContainerPath trims the container's code prefix so status output reads

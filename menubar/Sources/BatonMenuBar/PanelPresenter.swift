@@ -20,6 +20,11 @@ final class PanelPresenter {
     private let hosting: NSHostingView<AnyView>
     private var outsideClickMonitor: Any?
 
+    /// Called whenever the panel is hidden, however that happened. Clicking
+    /// away closes it without going through the status item, so an owner that
+    /// only watched its own toggle would think it was still open.
+    var onHide: (() -> Void)?
+
     var isVisible: Bool { panel.isVisible }
 
     init<Content: View>(content: Content) {
@@ -58,8 +63,10 @@ final class PanelPresenter {
     }
 
     func hide() {
+        guard panel.isVisible else { return }
         stopWatching()
         panel.orderOut(nil)
+        onHide?()
     }
 
     func toggle(under anchor: NSStatusBarButton?) {
