@@ -287,3 +287,28 @@ func labelsAhead(queue []store.Waiter, tree string) []string {
 	}
 	return ahead
 }
+
+// Give hands the baton to a named worktree as an ordinary session hold.
+//
+// Distinct from Grab, which pins the container to a human. A hold given here
+// behaves like one the session took itself: it expires, it satisfies Holds so
+// `baton check` passes, and the queue keeps moving afterwards. Handing the
+// container to somebody and simultaneously making their check fail would be a
+// trap.
+//
+// It jumps the queue by design — that is the point of doing it by hand.
+func Give(state *store.State, containerName, tree, label string, lease time.Duration, now time.Time) (displaced *store.Holder) {
+	container := state.Get(containerName)
+	if container.Holder != nil && container.Holder.Tree != tree {
+		displaced = container.Holder
+	}
+	container.Holder = &store.Holder{
+		Tree:    tree,
+		Label:   label,
+		Kind:    store.KindSession,
+		Since:   now,
+		Expires: now.Add(lease),
+	}
+	container.Queue = removeTree(container.Queue, tree)
+	return displaced
+}

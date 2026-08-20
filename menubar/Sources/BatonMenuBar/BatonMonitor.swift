@@ -73,9 +73,25 @@ final class BatonMonitor {
         }
     }
 
-    func grab(_ container: String) {
-        perform("Taking over \(container)") {
-            await BatonClient.performGrab(container: container, note: "taken from the menu bar")
+    /// Worktrees each container can be handed to, refreshed when the menu opens
+    /// rather than on the poll — the list changes rarely and costs a git call.
+    private(set) var worktrees: [String: [WorktreeOption]] = [:]
+
+    func loadWorktrees(for container: String) {
+        Task {
+            let found = await BatonClient.fetchTrees(container: container)
+            if !found.isEmpty { worktrees[container] = found }
+        }
+    }
+
+    /// Takes the container by hand. With a worktree, pins it to that one, which
+    /// is how you get a specific branch in front of you to test yourself.
+    func grab(_ container: String, worktree: WorktreeOption? = nil) {
+        let target = worktree.map { " on \($0.label)" } ?? ""
+        perform("Taking over \(container)\(target)") {
+            await BatonClient.performGrab(container: container,
+                                          worktree: worktree?.label,
+                                          note: "taken from the menu bar")
         }
     }
 

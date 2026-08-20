@@ -210,13 +210,33 @@ perfectly convincingly.
 ## Taking over by hand
 
 ```bash
-baton grab web --note "debugging something"
+baton grab web --note "debugging something"     # your main clone
+baton grab web pr-4821 --note "checking a fix"  # somebody else's branch
 baton drop web
 ```
 
-`grab` displaces whoever holds it, switches the container to your main clone,
-and **pins** it. Sessions in the queue stay in the queue and stop advancing.
-Nothing moves until you `drop`.
+`grab` displaces whoever holds it, switches the container to the worktree you
+name, and **pins** it. Sessions in the queue stay in the queue and stop
+advancing. Nothing moves until you `drop`.
+
+Naming a worktree is how you get a specific branch in front of you to test by
+hand. It takes a branch name, a directory name or a path, and matches on exact
+name first, then case-insensitively, then a unique prefix. Anything ambiguous is
+refused with the candidates rather than guessed at.
+
+```bash
+baton trees web        # what you can switch to, and what each is doing
+```
+
+```
+  main                     being served, main clone
+  pr-4821-review           holds it
+  feature-search           waiting
+  fix-login-redirect
+```
+
+The menu bar app has the same thing behind **On branch…**, so this does not need
+a terminal.
 
 Human holds never expire. If you took it by hand, only you give it back.
 
@@ -461,7 +481,8 @@ make snapshots                    # writes menubar/snapshots/
 | `baton check <container>` | Exit 0 if it is still yours *and* the container agrees. |
 | `baton status [container]` | Holder, what is served, notes, queue. `--json` for scripts. |
 | `baton line [container]` | The queue only. |
-| `baton grab <container>` | Take over by hand and pin it. `--note` to say why. |
+| `baton grab <container> [worktree]` | Take over by hand and pin it, on any worktree. `--note` to say why. |
+| `baton trees <container>` | Worktrees it can switch to. `--json` for scripts. |
 | `baton drop <container>` | Release a hand-taken container. |
 | `baton init <container>` | Install the supervisor and a starter strategy. `--dry-run` to look first. |
 | `baton install-skill` | Install the Claude Code skill. |

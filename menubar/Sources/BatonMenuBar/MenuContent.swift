@@ -166,9 +166,54 @@ struct ContainerCard: View {
                 .controlSize(.small)
                 .disabled(!container.running)
             }
+
+            WorktreePicker(container: container, monitor: monitor)
+
             Spacer(minLength: 0)
         }
         .disabled(monitor.busy)
+    }
+}
+
+/// Pins the container to a chosen worktree.
+///
+/// The plain take-over button pins the main clone, which is right when you want
+/// your own working copy back. Testing somebody else's branch by hand needs the
+/// container pointed somewhere specific, and typing a path into a terminal for
+/// that is a poor trade when the list is right here.
+struct WorktreePicker: View {
+    let container: ContainerStatus
+    let monitor: BatonMonitor
+
+    private var options: [WorktreeOption] {
+        monitor.worktrees[container.container] ?? []
+    }
+
+    var body: some View {
+        Menu {
+            if options.isEmpty {
+                Text("Reading worktrees…")
+            }
+            ForEach(options) { option in
+                Button {
+                    monitor.grab(container.container, worktree: option)
+                } label: {
+                    if let annotation = option.annotation {
+                        Text("\(option.label)  —  \(annotation)")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+                .disabled(option.holding && container.healthState == .pinned)
+            }
+        } label: {
+            Label("On branch…", systemImage: "arrow.triangle.branch")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .controlSize(.small)
+        .disabled(!container.running)
+        .onAppear { monitor.loadWorktrees(for: container.container) }
     }
 }
 

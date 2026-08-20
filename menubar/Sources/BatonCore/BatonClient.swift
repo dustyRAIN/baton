@@ -187,6 +187,31 @@ public struct MenuSummary: Equatable, Sendable {
     }
 }
 
+/// One worktree the container can be switched to, from `baton trees --json`.
+public struct WorktreeOption: Decodable, Sendable, Identifiable, Hashable {
+    public let label: String
+    public let path: String
+    public let branch: String?
+    public let main: Bool
+    public let holding: Bool
+    public let serving: Bool
+    public let queued: Bool
+
+    public var id: String { path }
+
+    /// A short note for the menu, or nil when there is nothing to say.
+    public var annotation: String? {
+        switch true {
+        case holding && serving: return "current"
+        case holding: return "holds it"
+        case serving: return "being served"
+        case queued: return "waiting"
+        case main: return "main"
+        default: return nil
+        }
+    }
+}
+
 /// A failure flattened to a plain message.
 ///
 /// Arbitrary Errors are not Sendable, so results crossing back from a detached
@@ -247,10 +272,26 @@ public enum BatonClient {
         await detached { try decode(try run(["status", "--json"])) }
     }
 
+    /// Lists the worktrees a container can be switched to.
+    public static func fetchTrees(container: String) async -> [WorktreeOption] {
+        let result: Result<[WorktreeOption], BatonFailure> = await detached {
+            let output = try run(["trees", container, "--json"])
+            guard let data = output.data(using: .utf8), !data.isEmpty else { return [] }
+            return try JSONDecoder().decode([WorktreeOption].self, from: data)
+        }
+        return (try? result.get()) ?? []
+    }
+
     /// Takes a container by hand, pinning it until it is dropped. Returns a
     /// message on failure, nil on success.
-    public static func performGrab(container: String, note: String) async -> String? {
-        await detached { _ = try run(["grab", container, "--note", note]) }.failureMessage
+    ///
+    /// `worktree` names which tree to pin it to — a branch or directory name.
+    /// Omitted, it pins the main clone, which is what grab has always done.
+    public static func performGrab(container: String, worktree: String?, note: String) async -> String? {
+        let arguments = ["grab", container]
+            + (worktree.map { [$0] } ?? [])
+            + ["--note", note]
+        return await detached { _ = try run(arguments) }.failureMessage
     }
 
     /// Releases a hand-taken container so the queue can move again.

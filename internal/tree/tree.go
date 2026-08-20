@@ -138,3 +138,74 @@ func gitOutput(dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// Find resolves a worktree from a path or a name.
+//
+// Typing a full path to hand the baton somewhere is miserable, so a branch name
+// or directory name works too. Matching is exact first, then case-insensitive,
+// then a unique prefix; anything ambiguous is refused with the candidates
+// rather than guessed at, because picking the wrong worktree silently is the
+// class of mistake this whole tool exists to prevent.
+func Find(repoRoot, query string) (*Tree, error) {
+	if query == "" {
+		return nil, fmt.Errorf("name a worktree")
+	}
+
+	// An actual path wins outright.
+	if info, err := os.Stat(query); err == nil && info.IsDir() {
+		return Resolve(query)
+	}
+
+	candidates, err := Siblings(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, match := range []func(*Tree) bool{
+		func(t *Tree) bool { return t.Label == query || t.Branch == query },
+		func(t *Tree) bool { return filepath.Base(t.Path) == query },
+		func(t *Tree) bool { return strings.EqualFold(t.Label, query) },
+		func(t *Tree) bool { return strings.EqualFold(filepath.Base(t.Path), query) },
+	} {
+		if found := single(candidates, match); found != nil {
+			return found, nil
+		}
+	}
+
+	prefixed := []*Tree{}
+	for _, candidate := range candidates {
+		if strings.HasPrefix(strings.ToLower(candidate.Label), strings.ToLower(query)) ||
+			strings.HasPrefix(strings.ToLower(filepath.Base(candidate.Path)), strings.ToLower(query)) {
+			prefixed = append(prefixed, candidate)
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0], nil
+	}
+	if len(prefixed) > 1 {
+		return nil, fmt.Errorf("%q matches %s — be more specific", query, strings.Join(labelsOf(prefixed), ", "))
+	}
+	return nil, fmt.Errorf("no worktree called %q; known: %s", query, strings.Join(labelsOf(candidates), ", "))
+}
+
+func single(candidates []*Tree, match func(*Tree) bool) *Tree {
+	var found *Tree
+	for _, candidate := range candidates {
+		if !match(candidate) {
+			continue
+		}
+		if found != nil {
+			return nil // ambiguous, let the next rule try
+		}
+		found = candidate
+	}
+	return found
+}
+
+func labelsOf(trees []*Tree) []string {
+	labels := make([]string, 0, len(trees))
+	for _, item := range trees {
+		labels = append(labels, item.Label)
+	}
+	return labels
+}

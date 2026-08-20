@@ -55,6 +55,7 @@ func Run(arguments []string, stdout, stderr io.Writer) int {
 		"init":   runInit,
 		"guard":  runGuard,
 
+		"trees":         runTrees,
 		"install-skill": runInstallSkill,
 	}
 
@@ -87,7 +88,9 @@ func usage(out io.Writer) {
   baton status [container]  who holds what, and who is waiting
   baton line [container]    just the queue
 
-  baton grab <container>    take over by hand; pins until you drop it
+  baton grab <container> [worktree]
+                            take over by hand and pin it, on any worktree
+  baton trees <container>   list the worktrees it can be switched to
   baton drop <container>    release a hand-taken baton
 
   baton init <container>    install the supervisor so handoffs skip a restart
@@ -520,6 +523,7 @@ func runGrab(arguments []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	treeFlag := flags.String("tree", "", "worktree to switch to (default: the main clone)")
 	note := flags.String("note", "", "why you took over, shown in status")
+	noSwap := flags.Bool("no-swap", false, "take it without switching the container")
 	positionals, err := parseArguments(flags, arguments)
 	if err != nil {
 		return exitError
@@ -536,14 +540,27 @@ func runGrab(arguments []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	// A hand grab defaults to the main clone, since the usual reason to take
-	// over is to get your own working copy back in front of you.
+	// Which worktree to pin it to may be named as a second word or with
+	// --tree, by branch name, directory name or path. It defaults to the main
+	// clone, since the commonest reason to take over is getting your own
+	// working copy back in front of you — but testing somebody else's branch by
+	// hand is just as good a reason, and that needs a name.
 	target := *treeFlag
-	if target == "" {
-		target = container.CodeRoot
+	if target == "" && len(positionals) > 1 {
+		target = positionals[1]
 	}
-	worktree, err := tree.Resolve(target)
+
+	var worktree *tree.Tree
+	if target == "" {
+		worktree, err = tree.Resolve(container.CodeRoot)
+	} else {
+		worktree, err = tree.Find(container.CodeRoot, target)
+	}
 	if err != nil {
+		fmt.Fprintf(stderr, "baton: %v\n", err)
+		return exitError
+	}
+	if _, err := container.ContainerPath(worktree.Path); err != nil {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
 		return exitError
 	}
@@ -575,23 +592,10 @@ func runGrab(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "       %d session(s) waiting behind you\n", waiting)
 	}
 
-	if wanted, err := container.ContainerPath(worktree.Path); err == nil {
-		serving, _ := container.Serving()
-		if serving != wanted && container.Running && container.Supervised() {
-			fmt.Fprintf(stderr, "baton: switching %s to %s\n", containerName, worktree.Label)
-			if _, err := container.RequestTree(worktree.Path); err != nil {
-				fmt.Fprintf(stderr, "baton: %v\n", err)
-				return exitError
-			}
-			if err := container.WaitReady(wanted, swapTimeout, pollInterval); err != nil {
-				fmt.Fprintf(stderr, "baton: %v\n", err)
-				return exitError
-			}
-			markServing(stateStore, containerName, worktree.Path)
-			fmt.Fprintf(stdout, "baton: serving %s on port %d\n", worktree.Label, container.DevPort())
-		}
+	if *noSwap {
+		return exitOK
 	}
-	return exitOK
+	return swapTo(stateStore, container, worktree, stdout, stderr)
 }
 
 func runDrop(arguments []string, stdout, stderr io.Writer) int {
