@@ -263,6 +263,9 @@ func overrideSnippet(managed []managedContainer) string {
 		fmt.Fprintf(builder, "    command: %s/%s/supervisor.sh\n", entry.CodeMount, docker.ControlDir)
 		fmt.Fprintf(builder, "    environment:\n")
 		fmt.Fprintf(builder, "      - BATON_CODE=%s\n", entry.CodeMount)
+		// Lets the supervisor make a worktree's .git pointer resolve, which is
+		// what allows git-dependent tooling to run in worktrees at all.
+		fmt.Fprintf(builder, "      - BATON_HOST_CODE=%s\n", entry.CodeRoot)
 	}
 	return builder.String()
 }

@@ -56,9 +56,13 @@ func containerCommands(name string, port int, extra ...string) *regexp.Regexp {
 		}
 	}
 	if name != "" {
+		// Only an actual exec into the container. An earlier rule also matched
+		// the container's name anywhere near the word "test", which caught
+		// unrelated work — `go test` in a repo whose fixtures mention the
+		// container was enough — and that rule added nothing, since every real
+		// invocation goes through some form of `docker exec`.
 		quoted := regexp.QuoteMeta(name)
 		parts = append(parts, `(docker|[\w-]*docker)\s+(exec|compose\s+exec)\s+\S*`+quoted)
-		parts = append(parts, `\b`+quoted+`\b.*\b(test|e2e|curl)\b`)
 	}
 	if port != 0 {
 		parts = append(parts, fmt.Sprintf(`(localhost|127\.0\.0\.1|0\.0\.0\.0):%d`, port))
@@ -68,7 +72,12 @@ func containerCommands(name string, port int, extra ...string) *regexp.Regexp {
 
 // batonInvocation matches the tool's own commands. Guarding these would
 // deadlock the session: it could never take the baton it is being told to take.
-var batonInvocation = regexp.MustCompile(`(^|[;&|]\s*)(\S*/)?baton\s`)
+//
+// Multiline, with newline treated as a separator. A shell block that runs
+// `baton take` on one line and the tests on the next is the normal shape of
+// this, and recognising only ; & | meant those were blocked despite doing
+// exactly the right thing.
+var batonInvocation = regexp.MustCompile(`(?m)(^|[;&|\n]\s*)(\S*/)?baton\s`)
 
 func runGuard(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("guard", flag.ContinueOnError)
@@ -119,6 +128,15 @@ func runGuard(arguments []string, stdout, stderr io.Writer) int {
 	worktree, err := tree.Resolve(workingDir)
 	if err != nil {
 		return allow(stdout, "")
+	}
+
+	// A caller working somewhere else entirely — a different repository that
+	// happens to mention this container — is none of the guard's business.
+	// Only worktrees the container can actually serve are governed by it.
+	if live, err := docker.Inspect(*containerFlag); err == nil {
+		if _, err := live.ContainerPath(worktree.Path); err != nil {
+			return allow(stdout, "")
+		}
 	}
 
 	stateStore, err := openStore()

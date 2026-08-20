@@ -258,7 +258,7 @@ func finishTake(stateStore *store.Store, container *docker.Container, worktree *
 		return exitOK
 	}
 
-	serving, _ := container.Serving()
+	serving, status := container.Serving()
 	wanted, err := container.ContainerPath(worktree.Path)
 	if err != nil {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
@@ -266,9 +266,31 @@ func finishTake(stateStore *store.Store, container *docker.Container, worktree *
 		return exitError
 	}
 
-	if serving == wanted {
+	// Serving the right tree is not enough — the app may have died since. That
+	// happens for real: parallel test runs can exhaust the container and get
+	// the dev server killed. Handing someone a dead server and calling it
+	// theirs is the same class of lie as handing them the wrong branch.
+	if serving == wanted && status == "ready" {
 		markServing(stateStore, container.Name, worktree.Path)
 		fmt.Fprintf(stdout, "baton: %s is yours (%s), already serving it\n", container.Name, label)
+		return exitOK
+	}
+	if serving == wanted && container.Running && container.Supervised() {
+		fmt.Fprintf(stderr, "baton: %s is on your tree but not running (%s) — restarting it\n",
+			container.Name, status)
+		if err := container.RequestRestart(); err != nil {
+			fmt.Fprintf(stderr, "baton: %v\n", err)
+			releaseAfterFailure(stateStore, container.Name, worktree.Path)
+			return exitError
+		}
+		if err := container.WaitReady(wanted, swapTimeout, pollInterval); err != nil {
+			fmt.Fprintf(stderr, "baton: %v\n", err)
+			releaseAfterFailure(stateStore, container.Name, worktree.Path)
+			return exitError
+		}
+		markServing(stateStore, container.Name, worktree.Path)
+		fmt.Fprintf(stdout, "baton: %s is yours (%s), restarted and serving on port %d\n",
+			container.Name, label, container.DevPort())
 		return exitOK
 	}
 

@@ -30,6 +30,7 @@ const (
 	servingFile     = "serving"
 	statusFile      = "status"
 	portFile        = "port"
+	restartFile     = "restart"
 	notesFile       = "notes"
 	strategyFile    = "strategy.sh"
 )
@@ -310,6 +311,21 @@ func (container *Container) RequestTree(hostTreePath string) (string, error) {
 		return "", fmt.Errorf("write %s: %w", target, err)
 	}
 	return containerPath, nil
+}
+
+// RequestRestart asks the supervisor to start the current tree again. Used when
+// the app died on its own: the tree has not changed, so asking for it again
+// would look like no change at all.
+func (container *Container) RequestRestart() error {
+	path := container.ControlPath(restartFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create control dir: %w", err)
+	}
+	// Clear the status the crash left behind. The supervisor only notices the
+	// request on its next tick, and until then a waiter reading "failed" would
+	// give up on a restart that is about to succeed.
+	_ = os.WriteFile(container.ControlPath(statusFile), []byte("restarting\n"), 0o644)
+	return os.WriteFile(path, []byte("1\n"), 0o644)
 }
 
 // Serving reports the container-side path the supervisor says it is currently

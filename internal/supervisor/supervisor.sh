@@ -36,6 +36,7 @@ CURRENT_FILE="$BATON_CONTROL/current-tree"
 SERVING_FILE="$BATON_CONTROL/serving"
 STATUS_FILE="$BATON_CONTROL/status"
 PORT_FILE="$BATON_CONTROL/port"
+RESTART_FILE="$BATON_CONTROL/restart"
 NOTES_FILE="$BATON_CONTROL/notes"
 LOG_FILE="$BATON_CONTROL/supervisor.log"
 STORE_ROOT="$BATON_CONTROL/store"
@@ -445,13 +446,31 @@ if [ ! -s "$CURRENT_FILE" ]; then
     printf '%s\n' "$BATON_CODE" >"$CURRENT_FILE"
 fi
 
+# A linked worktree's .git is a file holding an absolute host path, which does
+# not exist inside the container — so git fails in every worktree, and with it
+# anything that shells out to git: lint, changed-file detection, tooling that
+# reads the branch. Making the host path resolve to the same code fixes all of
+# it at once, and costs one symlink.
+if [ -n "${BATON_HOST_CODE:-}" ] && [ "$BATON_HOST_CODE" != "$BATON_CODE" ]; then
+    mkdir -p "$(dirname "$BATON_HOST_CODE")"
+    ln -sfn "$BATON_CODE" "$BATON_HOST_CODE"
+    baton_log "git in worktrees enabled: $BATON_HOST_CODE -> $BATON_CODE"
+fi
+
 baton_log "supervisor started, watching $CURRENT_FILE (port ${BATON_PORT:-none})"
 start_tree "$(cat "$CURRENT_FILE")"
 
 while true; do
     requested=$(cat "$CURRENT_FILE" 2>/dev/null)
 
-    if [ -n "$requested" ] && [ "$requested" != "$serving_tree" ]; then
+    # An explicit restart, used when the app died and the tree has not changed.
+    # Rewriting current-tree with the same value would not be noticed.
+    if [ -f "$RESTART_FILE" ]; then
+        rm -f "$RESTART_FILE"
+        baton_log "restart requested for $serving_tree"
+        stop_child
+        start_tree "${requested:-$serving_tree}"
+    elif [ -n "$requested" ] && [ "$requested" != "$serving_tree" ]; then
         stop_child
         start_tree "$requested"
     elif [ -n "$child_pid" ] && ! kill -0 "$child_pid" 2>/dev/null; then
