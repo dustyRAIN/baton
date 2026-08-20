@@ -23,8 +23,9 @@ type Report struct {
 	Status    string        `json:"status,omitempty"`
 	Drifted   bool          `json:"drifted"`
 	Queue     []QueueEntry  `json:"queue"`
-	Notes     []string      `json:"notes,omitempty"`
+	Notes     []docker.Note `json:"notes,omitempty"`
 	Error     string        `json:"error,omitempty"`
+	Health    Health        `json:"health"`
 }
 
 // HolderReport describes whoever currently owns a container.
@@ -36,6 +37,11 @@ type HolderReport struct {
 	Remaining string `json:"remaining,omitempty"`
 	Pinned    bool   `json:"pinned"`
 	Note      string `json:"note,omitempty"`
+
+	// The same two durations in seconds. The strings are for people; a UI
+	// needs numbers to draw how much of a lease is left.
+	HeldForSeconds   int `json:"heldForSeconds"`
+	RemainingSeconds int `json:"remainingSeconds"`
 }
 
 // QueueEntry is one session waiting its turn.
@@ -45,6 +51,19 @@ type QueueEntry struct {
 	Tree     string `json:"tree"`
 	Waiting  string `json:"waiting"`
 }
+
+// Health is a single word for the container's overall condition, so a UI does
+// not have to re-derive it from four separate fields.
+type Health string
+
+const (
+	HealthFree     Health = "free"
+	HealthHeld     Health = "held"
+	HealthPinned   Health = "pinned"
+	HealthDrifted  Health = "drifted"
+	HealthStarting Health = "starting"
+	HealthBroken   Health = "broken"
+)
 
 func runStatus(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
@@ -117,7 +136,15 @@ func report(only string, asJSON, queueOnly bool, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// buildReport assembles one container's view. Classification happens here, on
+// the way out, so no early return can leave health unset.
 func buildReport(state *store.State, name string, now time.Time) Report {
+	entry := gatherReport(state, name, now)
+	entry.Health = classify(entry)
+	return entry
+}
+
+func gatherReport(state *store.State, name string, now time.Time) Report {
 	containerState := state.Get(name)
 	entry := Report{Container: name, Queue: []QueueEntry{}}
 
@@ -131,8 +158,13 @@ func buildReport(state *store.State, name string, now time.Time) Report {
 			Pinned:  holder.Pinned(),
 			Note:    holder.Note,
 		}
+		entry.Holder.HeldForSeconds = int(now.Sub(holder.Since).Seconds())
 		if !holder.Expires.IsZero() {
 			entry.Holder.Remaining = shortDuration(holder.Expires.Sub(now))
+			entry.Holder.RemainingSeconds = int(holder.Expires.Sub(now).Seconds())
+			if entry.Holder.RemainingSeconds < 0 {
+				entry.Holder.RemainingSeconds = 0
+			}
 		}
 	}
 
@@ -166,6 +198,26 @@ func buildReport(state *store.State, name string, now time.Time) Report {
 		}
 	}
 	return entry
+}
+
+// classify reduces the report to one word. Keeping this on the Go side means
+// the CLI, the menu bar and anything else scripting baton agree on what counts
+// as trouble, rather than each re-deriving it.
+func classify(entry Report) Health {
+	switch {
+	case entry.Error != "" || !entry.Running:
+		return HealthBroken
+	case entry.Holder != nil && entry.Holder.Pinned:
+		return HealthPinned
+	case entry.Drifted:
+		return HealthDrifted
+	case entry.Status == "starting":
+		return HealthStarting
+	case entry.Holder != nil:
+		return HealthHeld
+	default:
+		return HealthFree
+	}
 }
 
 func writeReport(out io.Writer, entry Report, queueOnly bool) {
@@ -207,10 +259,13 @@ func writeReport(out io.Writer, entry Report, queueOnly bool) {
 	// so they go above it.
 	for index, note := range entry.Notes {
 		label := "  note     "
+		if note.Level == "warning" {
+			label = "  warning  "
+		}
 		if index > 0 {
 			label = strings.Repeat(" ", len(label))
 		}
-		fmt.Fprintf(out, "%s %s\n", label, note)
+		fmt.Fprintf(out, "%s %s\n", label, note.Text)
 	}
 
 	if len(entry.Queue) == 0 {

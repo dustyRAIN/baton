@@ -97,20 +97,34 @@ func (container *Container) DevPort() int {
 	return 0
 }
 
-// Notes are things the supervisor wants a human to see: applied migrations, a
-// schema that is ahead of the branch, anything that changes how results should
-// be read.
-func (container *Container) Notes() []string {
+// Note is something the supervisor wants a human to see.
+type Note struct {
+	// Level is "info" or "warning". A warning means results collected now may
+	// not be trustworthy; info is merely worth knowing.
+	Level string `json:"level"`
+	Text  string `json:"text"`
+}
+
+// Notes reads what the supervisor recorded for the tree it is serving.
+func (container *Container) Notes() []Note {
 	raw := strings.TrimSpace(readFile(container.ControlPath(notesFile)))
 	if raw == "" {
 		return nil
 	}
-	lines := []string{}
+	notes := []Note{}
 	for _, line := range strings.Split(raw, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		lines = append(lines, parts[len(parts)-1])
+		fields := strings.Split(line, "\t")
+		switch len(fields) {
+		case 0, 1:
+			notes = append(notes, Note{Level: "info", Text: line})
+		case 2:
+			// Written before notes carried a level.
+			notes = append(notes, Note{Level: "info", Text: fields[1]})
+		default:
+			notes = append(notes, Note{Level: fields[1], Text: fields[2]})
+		}
 	}
-	return lines
+	return notes
 }
 
 // HasStrategy reports whether this repo has customised the supervisor's hooks.

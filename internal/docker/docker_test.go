@@ -91,19 +91,36 @@ func TestDevPortIsZeroWhenNothingIsPublished(t *testing.T) {
 	}
 }
 
-func TestNotesAreReadWithoutTheirTimestamps(t *testing.T) {
+func TestNotesCarryTheirLevel(t *testing.T) {
 	container := &Container{Name: "mwr", CodeRoot: t.TempDir()}
 	writeControl(t, container, notesFile,
-		"05:11:35\tapplied migrations abc -> def. Other worktrees share this database.\n"+
-			"05:12:01\tdatabase is ahead of this branch.\n")
+		"05:11:35\tinfo\tapplied migrations abc -> def\n"+
+			"05:12:01\twarning\tdatabase is ahead of this branch\n")
 
 	notes := container.Notes()
 
 	if len(notes) != 2 {
 		t.Fatalf("notes = %d, want 2", len(notes))
 	}
-	if notes[0] != "applied migrations abc -> def. Other worktrees share this database." {
-		t.Errorf("first note = %q", notes[0])
+	if notes[0].Level != "info" || notes[0].Text != "applied migrations abc -> def" {
+		t.Errorf("first note = %+v", notes[0])
+	}
+	if notes[1].Level != "warning" {
+		t.Errorf("second note level = %q, want warning — a warning shown as info "+
+			"hides that results are untrustworthy", notes[1].Level)
+	}
+}
+
+func TestNotesWrittenBeforeLevelsExistedStillRead(t *testing.T) {
+	// A supervisor from an older install writes two fields, not three. Losing
+	// those notes entirely would be worse than showing them as info.
+	container := &Container{Name: "mwr", CodeRoot: t.TempDir()}
+	writeControl(t, container, notesFile, "05:11:35\tsomething happened\n")
+
+	notes := container.Notes()
+
+	if len(notes) != 1 || notes[0].Text != "something happened" || notes[0].Level != "info" {
+		t.Errorf("notes = %+v", notes)
 	}
 }
 

@@ -66,11 +66,18 @@ baton_log() {
 set_status() { printf '%s\n' "$1" >"$STATUS_FILE"; }
 set_serving() { printf '%s\n' "$1" >"$SERVING_FILE"; }
 
-# note records something the human should see in `baton status`. Used for
-# conditions that are not failures but change how results should be read.
-note() {
-    printf '%s\t%s\n' "$(date -u +%H:%M:%S)" "$*" >>"$NOTES_FILE"
-    baton_log "NOTE: $*"
+# note and warn record something a human should see in `baton status`.
+#
+# The split matters: "I applied migrations" is worth knowing, while "your schema
+# is ahead of this branch" means the results you are about to collect are not
+# trustworthy. Colouring both the same would flatten that.
+note() { record_note info "$*"; }
+warn() { record_note warning "$*"; }
+
+record_note() {
+    local level="$1"; shift
+    printf '%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$level" "$*" >>"$NOTES_FILE"
+    baton_log "${level^^}: $*"
 }
 
 clear_notes() { : >"$NOTES_FILE"; }
@@ -274,7 +281,7 @@ alembic_migrate() {
     head=$(alembic heads 2>/dev/null | head -1 | awk '{print $1}')
 
     if [ -n "$head" ] && [ -n "$after" ] && [ "$after" != "$head" ]; then
-        note "database is at $after but this tree expects $head — the schema is ahead of the branch. Migration-dependent results are not trustworthy. Fixing it means a downgrade, which is destructive, so baton will not do it."
+        warn "database is at $after but this tree expects $head — the schema is ahead of the branch. Migration-dependent results are not trustworthy. Fixing it means a downgrade, which is destructive, so baton will not do it."
     elif [ -n "$before" ] && [ "$before" != "$after" ]; then
         baton_log "migrated $before -> $after (shared database, other trees are affected)"
         note "applied migrations $before -> $after. Other worktrees share this database."
