@@ -68,6 +68,10 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "baton: kept the existing strategy at %s\n", strategyPath)
 	}
 
+	if stack == stackPip {
+		fmt.Fprintf(stderr, "baton: python has no universal start command — fill in baton_start "+
+			"in the strategy before taking the baton, or the container will not come up\n")
+	}
 	if stack == stackUnknown {
 		fmt.Fprintf(stderr, "baton: no lockfile recognised, so there are no useful defaults — "+
 			"fill in baton_prepare and baton_start in the strategy before taking the baton\n")
@@ -94,14 +98,19 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 		entry.Initialized = true
 		entry.CodeRoot = container.CodeRoot
 		entry.CodeMount = container.CodeMount
+		entry.Service = container.Service
 		for _, name := range state.Names() {
 			if candidate := state.Get(name); candidate.Initialized {
 				mount := candidate.CodeMount
 				if mount == "" {
 					mount = "/code"
 				}
+				service := candidate.Service
+				if service == "" {
+					service = name
+				}
 				managed = append(managed, managedContainer{
-					Name: name, CodeRoot: candidate.CodeRoot, CodeMount: mount,
+					Name: name, Service: service, CodeRoot: candidate.CodeRoot, CodeMount: mount,
 				})
 			}
 		}
@@ -117,10 +126,20 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
 		return exitError
 	}
-	written, err := writeComposeOverride(overridePath, managed, *force)
+
+	// Only containers belonging to this compose file go in this override.
+	// Listing a container from another project would make compose read it as a
+	// new service with no image and refuse the whole file.
+	siblings := []managedContainer{}
+	for _, candidate := range managed {
+		if path, err := findComposeOverride(candidate.CodeRoot); err == nil && path == overridePath {
+			siblings = append(siblings, candidate)
+		}
+	}
+	written, err := writeComposeOverride(overridePath, siblings, *force)
 	if err != nil {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
-		fmt.Fprintf(stderr, "\nAdd this to %s by hand instead:\n\n%s\n", overridePath, overrideSnippet(managed))
+		fmt.Fprintf(stderr, "\nAdd this to %s by hand instead:\n\n%s\n", overridePath, overrideSnippet(siblings))
 		return exitError
 	}
 	if written {
@@ -140,12 +159,13 @@ recreated rather than just restarted for the new command to apply.
 Then check it took:
 
   baton status %s
-`, containerName, containerName)
+`, container.Service, containerName)
 	return exitOK
 }
 
 type managedContainer struct {
 	Name      string
+	Service   string
 	CodeRoot  string
 	CodeMount string
 }
@@ -239,7 +259,7 @@ func overrideSnippet(managed []managedContainer) string {
 	fmt.Fprintf(builder, "# keeps the container up and moves the dev server between worktrees.\n")
 	fmt.Fprintf(builder, "services:\n")
 	for _, entry := range managed {
-		fmt.Fprintf(builder, "  %s:\n", entry.Name)
+		fmt.Fprintf(builder, "  %s:\n", entry.Service)
 		fmt.Fprintf(builder, "    command: %s/%s/supervisor.sh\n", entry.CodeMount, docker.ControlDir)
 		fmt.Fprintf(builder, "    environment:\n")
 		fmt.Fprintf(builder, "      - BATON_CODE=%s\n", entry.CodeMount)

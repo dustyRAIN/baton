@@ -188,8 +188,15 @@ baton_prepare() {
             # the tree, so there is no per-tree directory to share. The editable
             # install is global and points at one tree at a time, which is why
             # it has to be repeated on every switch rather than cached.
-            pip3 install -r requirements.txt
-            [ -f setup.py ] || [ -f pyproject.toml ] && pip3 install -e .
+            if [ -f requirements.txt ]; then
+                pip3 install -r requirements.txt || return 1
+            fi
+            # Written as an if rather than `[ -f a ] || [ -f b ] && install`,
+            # which exits non-zero when neither file is present and would fail
+            # prepare for every Python repo that has no packaging metadata.
+            if [ -f setup.py ] || [ -f pyproject.toml ]; then
+                pip3 install -e . || return 1
+            fi
             ;;
         *)
             baton_log "no default prepare for an unrecognised stack; define baton_prepare in strategy.sh"
@@ -212,17 +219,34 @@ baton_start() {
         pnpm) exec ./scripts/start.sh ;;
         yarn) exec yarn start ;;
         npm) exec npm start ;;
+        pip)
+            baton_log "python has no universal start command — define baton_start in $STRATEGY_FILE"
+            return 1
+            ;;
         *)
-            baton_log "no default start for an unrecognised stack; define baton_start in strategy.sh"
+            baton_log "no default start for stack '$BATON_STACK' — define baton_start in $STRATEGY_FILE"
             return 1
             ;;
     esac
 }
 
 # baton_health exits 0 once the server is answering.
+#
+# Slim base images frequently ship neither curl nor wget, so falling back to a
+# bare TCP probe matters — without it the supervisor never reports ready even
+# though the app is up, and every take hangs until it times out. The probe only
+# proves the port is open, which is why it is the last resort.
 baton_health() {
     [ -z "$BATON_PORT" ] && return 0
-    curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:$BATON_PORT${BATON_HEALTH_PATH:-/}"
+    local url="http://127.0.0.1:$BATON_PORT${BATON_HEALTH_PATH:-/}"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -sf -o /dev/null --max-time 3 "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O /dev/null -T 3 "$url"
+    else
+        (exec 9<>"/dev/tcp/127.0.0.1/$BATON_PORT") 2>/dev/null
+    fi
 }
 
 # ---------------------------------------------------------------- migrations
@@ -258,6 +282,25 @@ alembic_migrate() {
 }
 
 # ---------------------------------------------------------------- state machine
+
+# wait_for_port_release blocks until nothing is listening on the app port.
+#
+# A server that does not set SO_REUSEADDR cannot rebind for a moment after the
+# previous one exits, so starting the next tree immediately fails with "address
+# already in use" and the handoff looks like a broken app. Plenty of servers do
+# not set it, so baton waits rather than making that their problem.
+wait_for_port_release() {
+    [ -z "$BATON_PORT" ] && return 0
+    local waited=0
+    while [ "$waited" -lt 30 ]; do
+        (exec 9<>"/dev/tcp/127.0.0.1/$BATON_PORT") 2>/dev/null || return 0
+        exec 9<&- 2>/dev/null
+        [ "$waited" -eq 0 ] && baton_log "waiting for port $BATON_PORT to be released"
+        sleep 1
+        waited=$((waited + 1))
+    done
+    baton_log "port $BATON_PORT is still held after ${waited}s; starting anyway"
+}
 
 stop_child() {
     [ -z "$child_pid" ] && return 0
@@ -332,9 +375,13 @@ start_tree() {
         return 1
     fi
 
+    wait_for_port_release
+
     baton_log "starting the app in $tree"
-    setsid bash -c 'cd "$BATON_TREE" && baton_start' &
+    set -m
+    ( cd "$tree" && baton_start ) >>"$LOG_FILE" 2>&1 &
     child_pid=$!
+    set +m
 
     wait_ready
 }
@@ -384,10 +431,6 @@ fi
 BATON_PORT="${BATON_PORT:-${PORT:-}}"
 export BATON_PORT BATON_HEALTH_PATH="${BATON_HEALTH_PATH:-/}"
 printf '%s\n' "$BATON_PORT" >"$PORT_FILE"
-
-# baton_start runs in a subshell, so the hooks and helpers it needs must be
-# visible there.
-export -f baton_start baton_log 2>/dev/null || true
 
 # Default to the main clone so the container behaves normally before anything
 # has ever taken the baton.

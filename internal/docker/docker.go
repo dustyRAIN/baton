@@ -68,6 +68,12 @@ type Container struct {
 	HealthPort int
 	HealthPath string
 
+	// Service is the compose service name, which is not always the container
+	// name — a compose file commonly sets container_name to something else.
+	// The override has to be keyed by the service or compose reads it as a new
+	// service with no image.
+	Service string
+
 	// Command is what the container is currently started with. Captured so
 	// `baton init` can point at the runner script it is about to replace,
 	// which is where any dependency waits and one-time setup steps live.
@@ -132,8 +138,9 @@ func Inspect(name string) (*Container, error) {
 			Destination string `json:"Destination"`
 		} `json:"Mounts"`
 		Config struct {
-			Cmd         []string `json:"Cmd"`
-			Env         []string `json:"Env"`
+			Cmd         []string          `json:"Cmd"`
+			Env         []string          `json:"Env"`
+			Labels      map[string]string `json:"Labels"`
 			Healthcheck struct {
 				Test []string `json:"Test"`
 			} `json:"Healthcheck"`
@@ -154,6 +161,10 @@ func Inspect(name string) (*Container, error) {
 	entry := raw[0]
 
 	container := &Container{Name: name, Running: entry.State.Running, Command: entry.Config.Cmd}
+	container.Service = entry.Config.Labels["com.docker.compose.service"]
+	if container.Service == "" {
+		container.Service = name
+	}
 	for _, mount := range entry.Mounts {
 		container.Mounts = append(container.Mounts, Mount{Source: mount.Source, Destination: mount.Destination})
 	}
@@ -184,12 +195,18 @@ func Inspect(name string) (*Container, error) {
 		fmt.Sscanf(match[1], "%d", &container.HealthPort)
 		container.HealthPath = match[2]
 	}
-	// Not every container declares a healthcheck. A PORT in the environment is
-	// the next best statement of which published port serves the app.
+	// Not every container declares a healthcheck. The environment is the next
+	// best statement of which published port serves the app. BATON_PORT is
+	// checked first because someone who sets it has said so deliberately.
 	if container.HealthPort == 0 {
-		for _, variable := range entry.Config.Env {
-			if value, found := strings.CutPrefix(variable, "PORT="); found {
-				fmt.Sscanf(value, "%d", &container.HealthPort)
+		for _, prefix := range []string{"BATON_PORT=", "PORT="} {
+			for _, variable := range entry.Config.Env {
+				if value, found := strings.CutPrefix(variable, prefix); found {
+					fmt.Sscanf(value, "%d", &container.HealthPort)
+					break
+				}
+			}
+			if container.HealthPort != 0 {
 				break
 			}
 		}

@@ -122,7 +122,14 @@ func strategyTemplate(stack stackKind, container *docker.Container) string {
 `, stack, installCommand(stack))
 
 	case stackPip:
-		builder.WriteString(`# Python installs into the image's system site-packages, not into the tree,
+		builder.WriteString(`# REQUIRED. Python has no universal start command, so there is no default
+# for this one and the container will not come up until you fill it in.
+baton_start() {
+    echo "baton: edit baton_start in this file" >&2
+    return 1
+}
+
+# Python installs into the image's system site-packages, not into the tree,
 # so there is nothing per-tree to share and the editable install has to be
 # repeated on every switch. The default already does this:
 #
@@ -131,7 +138,10 @@ func strategyTemplate(stack stackKind, container *docker.Container) string {
 #     pip3 install -e .
 # }
 #
-# baton_start() { exec uwsgi --wsgi yourapp:app --http-socket :$BATON_PORT; }
+# Typical starts:
+#   exec uwsgi --wsgi yourapp:app --http-socket :$BATON_PORT
+#   exec gunicorn --bind 0.0.0.0:$BATON_PORT yourapp.wsgi:app
+#   exec python3 manage.py runserver 0.0.0.0:$BATON_PORT
 `)
 
 	default:

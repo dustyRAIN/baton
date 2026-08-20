@@ -103,6 +103,9 @@ type Container struct {
 	// compose override can be rebuilt without Docker being up.
 	CodeRoot  string `json:"codeRoot,omitempty"`
 	CodeMount string `json:"codeMount,omitempty"`
+
+	// Service is the compose service name, which the override must be keyed by.
+	Service string `json:"service,omitempty"`
 }
 
 // State is the whole file.
