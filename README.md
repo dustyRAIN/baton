@@ -20,6 +20,7 @@ web
 
 ## Contents
 
+- [Try it in ten minutes](#try-it-in-ten-minutes)
 - [Why this is not just a lock file](#why-this-is-not-just-a-lock-file)
 - [Requirements](#requirements)
 - [Install](#install)
@@ -34,6 +35,22 @@ web
 - [How it works](#how-it-works)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
+
+---
+
+## Try it in ten minutes
+
+The fastest way to understand baton is to watch a container hand itself between
+two branches. There is a runnable demo that builds a throwaway project, so you
+can do that without touching anything you own:
+
+```bash
+./examples/walkthrough/setup.sh
+```
+
+Then follow [examples/walkthrough/README.md](examples/walkthrough/README.md). It
+takes about ten minutes and ends with the failure this tool exists to prevent,
+demonstrated rather than described.
 
 ---
 
@@ -553,3 +570,30 @@ are indistinguishable to baton.
 
 **No Windows support.** The supervisor is bash and assumes a Linux container;
 the CLI uses Unix file locking.
+
+---
+
+## Contributing
+
+Issues and pull requests welcome. Before opening a PR:
+
+```bash
+make check                          # gofmt, go vet, go test
+cd menubar && swift build && ./.build/debug/baton-probe --selftest
+```
+
+Two things worth knowing about the codebase. `internal/core` holds the queue
+rules as pure functions with no I/O, so behaviour changes belong there and are
+cheap to test. And the JSON from `baton status --json` is the contract between
+the Go CLI and the Swift app — change its shape and the menu bar's self-check
+will tell you.
+
+---
+
+## License
+
+[Apache License 2.0](LICENSE).
+
+Permissive, so anyone can use it at work without a legal review, and it carries
+an explicit patent grant and contribution terms that MIT leaves unsaid — which
+matters when contributors are employed somewhere.
