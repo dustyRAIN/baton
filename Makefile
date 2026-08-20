@@ -5,7 +5,7 @@ PREFIX  ?= /usr/local
 APP     := Baton.app
 APP_DIR := menubar/build/$(APP)
 
-.PHONY: build test lint check install uninstall clean menubar menubar-install menubar-run
+.PHONY: build test lint check install uninstall clean menubar menubar-install menubar-run menubar-check snapshots
 
 build:
 	go build -ldflags "-X baton/internal/cli.Version=$(VERSION)" -o bin/$(BINARY) ./cmd/baton
@@ -42,6 +42,16 @@ menubar:
 
 menubar-run: menubar
 	open $(APP_DIR)
+
+menubar-check:
+	cd menubar && swift build && ./.build/debug/baton-probe --selftest
+
+# Renders every popover state to PNGs in both appearances. A menu bar popover
+# cannot be screenshotted without screen recording permission, so this is how
+# the layout gets reviewed — and how a state that renders blank gets noticed.
+snapshots:
+	cd menubar && swift build && ./.build/debug/BatonMenuBar --snapshot $(CURDIR)/menubar/snapshots
+	@echo "open $(CURDIR)/menubar/snapshots"
 
 menubar-install: menubar
 	rm -rf /Applications/$(APP)

@@ -412,26 +412,41 @@ the same rule.
 make menubar-install          # /Applications/Baton.app
 ```
 
-An agent app: menu bar only, no Dock icon. Shows the current holder and how many
-are waiting, with Take over / Release buttons.
+An agent app: menu bar only, no Dock icon. Add it to Login Items to keep it
+around.
+
+In the bar itself, the holder and how many are waiting behind them:
 
 ```
 ◉ pr-4821-review +2     held, two waiting
-⚠ pr-4821-review        holds the lock, container is serving someone else
+⚠ pr-4821-review        holds it, but the container is serving someone else
 ✋ main                  taken by hand, queue frozen
 ○ free                  nobody has it
 ```
 
+The popover puts the holder and what the container is *actually serving* in one
+card, side by side, because their disagreement is the failure worth catching and
+two adjacent lines contradicting each other is easier to notice than two facts
+separated by other content. A bar shows how much of the lease is left and turns
+orange near the end. Supervisor notes appear inline, warnings in orange and
+information in blue. Anything that only matters when something is wrong stays
+hidden until it is.
+
 It shells out to `baton status --json` every two seconds rather than reading the
-state file, so there is only ever one implementation of the rules. Add it to
-Login Items to keep it around.
+state file, so there is only ever one implementation of the rules.
 
 If it looks wrong, ask it what it sees:
 
 ```bash
-cd menubar
-swift run baton-probe             # what the menu bar is rendering, same code path
-swift run baton-probe --selftest  # check decoding against captured CLI output
+make menubar-check                # decoding self-check
+cd menubar && swift run baton-probe   # what the menu bar is rendering, same code path
+```
+
+To review the layout, render every state to PNGs in both appearances — a menu
+bar popover cannot be screenshotted without screen recording permission:
+
+```bash
+make snapshots                    # writes menubar/snapshots/
 ```
 
 ---

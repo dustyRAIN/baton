@@ -14,9 +14,29 @@ public struct ContainerStatus: Decodable, Identifiable, Sendable {
     public let status: String?
     public let drifted: Bool
     public let queue: [QueueEntry]
+    public let notes: [Note]?
     public let error: String?
 
+    /// One word for the container's condition, decided by the CLI so every
+    /// front end agrees on what counts as trouble.
+    public let health: String?
+
     public var id: String { container }
+
+    public init(container: String, running: Bool, holder: Holder?, serving: String?,
+                status: String?, drifted: Bool, queue: [QueueEntry], notes: [Note]?,
+                error: String?, health: String?) {
+        self.container = container
+        self.running = running
+        self.holder = holder
+        self.serving = serving
+        self.status = status
+        self.drifted = drifted
+        self.queue = queue
+        self.notes = notes
+        self.error = error
+        self.health = health
+    }
 
     public struct Holder: Decodable, Sendable {
         public let label: String
@@ -26,6 +46,63 @@ public struct ContainerStatus: Decodable, Identifiable, Sendable {
         public let remaining: String?
         public let pinned: Bool
         public let note: String?
+
+        /// The same durations as numbers, for drawing how much lease is left.
+        public let heldForSeconds: Int
+        public let remainingSeconds: Int
+
+        // Writing init(from:) suppresses the synthesized CodingKeys, so they
+        // have to be spelled out.
+        private enum CodingKeys: String, CodingKey {
+            case label, tree, kind, heldFor, remaining, pinned, note
+            case heldForSeconds, remainingSeconds
+        }
+
+        /// Decoded with defaults for the numeric durations so the app keeps
+        /// working against a CLI older than they are — a menu bar that refuses
+        /// to render because one field is missing is worse than one without a
+        /// progress bar.
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            label = try values.decode(String.self, forKey: .label)
+            tree = try values.decode(String.self, forKey: .tree)
+            kind = try values.decode(String.self, forKey: .kind)
+            heldFor = try values.decode(String.self, forKey: .heldFor)
+            remaining = try values.decodeIfPresent(String.self, forKey: .remaining)
+            pinned = try values.decode(Bool.self, forKey: .pinned)
+            note = try values.decodeIfPresent(String.self, forKey: .note)
+            heldForSeconds = try values.decodeIfPresent(Int.self, forKey: .heldForSeconds) ?? 0
+            remainingSeconds = try values.decodeIfPresent(Int.self, forKey: .remainingSeconds) ?? 0
+        }
+
+        public init(label: String, tree: String, kind: String, heldFor: String,
+                    remaining: String?, pinned: Bool, note: String?,
+                    heldForSeconds: Int, remainingSeconds: Int) {
+            self.label = label
+            self.tree = tree
+            self.kind = kind
+            self.heldFor = heldFor
+            self.remaining = remaining
+            self.pinned = pinned
+            self.note = note
+            self.heldForSeconds = heldForSeconds
+            self.remainingSeconds = remainingSeconds
+        }
+    }
+
+    /// Something the supervisor wants a human to see. A warning means results
+    /// collected now may not be trustworthy; info is merely worth knowing.
+    public struct Note: Decodable, Sendable, Identifiable, Hashable {
+        public let level: String
+        public let text: String
+
+        public var id: String { level + text }
+        public var isWarning: Bool { level == "warning" }
+
+        public init(level: String, text: String) {
+            self.level = level
+            self.text = text
+        }
     }
 
     public struct QueueEntry: Decodable, Identifiable, Sendable {
@@ -35,6 +112,13 @@ public struct ContainerStatus: Decodable, Identifiable, Sendable {
         public let waiting: String
 
         public var id: String { tree }
+
+        public init(position: Int, label: String, tree: String, waiting: String) {
+            self.position = position
+            self.label = label
+            self.tree = tree
+            self.waiting = waiting
+        }
     }
 
     /// A short description of what the container is doing, for the detail rows.

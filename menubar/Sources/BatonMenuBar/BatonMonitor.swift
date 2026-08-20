@@ -21,8 +21,17 @@ final class BatonMonitor {
     private(set) var installed = BatonClient.executable != nil
 
     private var timer: Timer?
-    private var busy = false
+    /// True while a grab or drop is in flight, so the UI can show it.
+    private(set) var busy = false
     private let interval: TimeInterval = 2
+
+    init() {}
+
+    /// A monitor with fixed contents and no polling, for rendering snapshots.
+    init(preview containers: [ContainerStatus]) {
+        self.containers = containers
+        self.installed = true
+    }
 
     func start() {
         refresh()
