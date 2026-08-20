@@ -80,6 +80,25 @@ enum Selftest {
                 check("docker down holder", container.holderDescription, "free")
             }
 
+            // The health word and note levels are contract fields the UI keys
+            // colour off, so a change in their shape has to fail loudly here
+            // rather than quietly turning every warning into an info banner.
+            let noted = try BatonClient.decode(Fixtures.withNotes)
+            if let container = noted.first {
+                check("health word", container.health ?? "", "held")
+                check("note count", container.notes?.count ?? 0, 2)
+                check("first note is info", container.notes?.first?.isWarning ?? true, false)
+                check("second note is a warning", container.notes?.last?.isWarning ?? false, true)
+                check("lease seconds survive", container.holder?.remainingSeconds ?? 0, 948)
+            }
+
+            // A payload from a CLI older than the numeric lease fields must
+            // still render; a menu bar that refuses to draw is worse than one
+            // without a progress bar.
+            let legacy = try BatonClient.decode(Fixtures.withoutLeaseSeconds)
+            check("legacy decodes", legacy.count, 1)
+            check("legacy lease defaults", legacy.first?.holder?.remainingSeconds ?? -1, 0)
+
             // Missing binary.
             check("missing binary", MenuSummary.from(containers: [], installed: false).text, "baton?")
 
@@ -111,7 +130,9 @@ private enum Fixtures {
               "kind": "session",
               "heldFor": "4m12s",
               "remaining": "15m48s",
-              "pinned": false
+              "pinned": false,
+              "heldForSeconds": 252,
+              "remainingSeconds": 948
             },
             "serving": "pr-4821",
             "status": "ready",
@@ -132,15 +153,34 @@ private enum Fixtures {
     static let pinnedByHand = """
         [{"container":"web","running":true,
           "holder":{"label":"main","tree":"/t/main","kind":"human","heldFor":"3m00s",
-                    "pinned":true,"note":"debugging by hand"},
+                    "pinned":true,"note":"debugging by hand",
+                    "heldForSeconds":180,"remainingSeconds":0},
           "serving":"main","status":"ready","drifted":false,"queue":[]}]
         """
 
     static let drifted = """
         [{"container":"web","running":true,
           "holder":{"label":"pr-4821-review","tree":"/t/a","kind":"session","heldFor":"10s",
-                    "remaining":"19m50s","pinned":false},
+                    "remaining":"19m50s","pinned":false,
+                    "heldForSeconds":10,"remainingSeconds":1190},
           "serving":"main","status":"ready","drifted":true,"queue":[]}]
+        """
+
+    static let withNotes = """
+        [{"container":"api","running":true,
+          "holder":{"label":"add-webhooks","tree":"/t/a","kind":"session","heldFor":"4m12s",
+                    "remaining":"15m48s","pinned":false,
+                    "heldForSeconds":252,"remainingSeconds":948},
+          "serving":"add-webhooks","status":"ready","drifted":false,"queue":[],
+          "health":"held",
+          "notes":[{"level":"info","text":"applied migrations"},
+                   {"level":"warning","text":"schema is ahead of the branch"}]}]
+        """
+
+    static let withoutLeaseSeconds = """
+        [{"container":"web","running":true,
+          "holder":{"label":"old","tree":"/t/a","kind":"session","heldFor":"1m","pinned":false},
+          "serving":"old","status":"ready","drifted":false,"queue":[]}]
         """
 
     static let dockerDown = """
