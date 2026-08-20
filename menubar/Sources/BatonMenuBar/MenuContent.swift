@@ -6,29 +6,15 @@ import SwiftUI
 /// Ordered by what someone opening this actually wants to know: who has it, is
 /// the container really on their branch, who is waiting, what can I do. Anything
 /// that only matters when something is wrong stays hidden until it is.
-struct MenuContent: View {
-    let monitor: BatonMonitor
-
-    var body: some View {
-        // Enough containers, queued sessions and notes will eventually outgrow
-        // any screen. Capping the height and scrolling keeps the window on
-        // screen rather than letting it place itself off the top.
-        ScrollView(.vertical) {
-            MenuBody(monitor: monitor)
-        }
-        .frame(width: Design.popoverWidth)
-        .frame(maxHeight: Design.maxPopoverHeight)
-        .scrollBounceBehavior(.basedOnSize)
-    }
-}
-
-/// The popover's contents, without the scrolling wrapper.
+/// Deliberately not wrapped in a ScrollView.
 ///
-/// Separate because ImageRenderer lays a ScrollView out but does not rasterise
-/// what is inside it — snapshots of the whole popover come out blank. The
-/// snapshots render this directly, which also keeps them honest about the
-/// content rather than the container.
-struct MenuBody: View {
+/// A menu bar window sizes itself to its content, and a ScrollView has no
+/// intrinsic height — it takes whatever it is offered, which in a self-sizing
+/// window is nothing, and the popover collapses to a sliver. `maxHeight` caps a
+/// size, it does not supply one. If the content ever needs to scroll, the
+/// height has to be measured and set explicitly rather than left to the
+/// ScrollView to decide.
+struct MenuContent: View {
     let monitor: BatonMonitor
 
     var body: some View {

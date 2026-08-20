@@ -11,10 +11,8 @@ import SwiftUI
 /// fixed sample data — which also makes it a cheap regression check that no
 /// state renders blank or clipped.
 ///
-/// Two things it cannot draw, so do not read them as bugs: an indeterminate
-/// ProgressView comes out as a missing glyph because it is animated, and a
-/// ScrollView lays out but its contents never rasterise — which is why these
-/// render MenuBody rather than MenuContent.
+/// One thing it cannot draw, so do not read it as a bug: an indeterminate
+/// ProgressView comes out as a missing glyph because it is animated.
 @MainActor
 enum Snapshot {
 
@@ -38,7 +36,7 @@ enum Snapshot {
             for scheme in [ColorScheme.light, .dark] {
                 let monitor = BatonMonitor(preview: containers,
                                            busy: name == "09-busy" ? "Taking over web" : nil)
-                let view = MenuBody(monitor: monitor)
+                let view = MenuContent(monitor: monitor)
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 
