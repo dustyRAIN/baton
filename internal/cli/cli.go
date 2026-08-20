@@ -102,7 +102,7 @@ worktree containing the current directory.
 
 // parseArguments parses flags that appear on either side of the positional
 // arguments. Go's flag package stops at the first non-flag word, which would
-// silently drop the flag in `baton take cmp-client --wait` — the way anyone
+// silently drop the flag in `baton take web --wait` — the way anyone
 // would naturally type it. Parsing in rounds, peeling off one positional each
 // time, accepts both orders.
 func parseArguments(flags *flag.FlagSet, arguments []string) ([]string, error) {

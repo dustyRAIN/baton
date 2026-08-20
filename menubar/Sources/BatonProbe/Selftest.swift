@@ -30,14 +30,14 @@ enum Selftest {
             let held = try BatonClient.decode(Fixtures.heldWithQueue)
             check("held count", held.count, 1)
             if let container = held.first {
-                check("held label", container.holder?.label ?? "", "pr-12254-head")
+                check("held label", container.holder?.label ?? "", "pr-4821-review")
                 check("held remaining", container.holder?.remaining ?? "", "15m48s")
                 check("queue labels", container.queue.map(\.label).joined(separator: ","),
-                      "pr-12277-review,CCP-18046")
+                      "feature-search,fix-login")
             }
 
             let heldSummary = MenuSummary.from(containers: held, installed: true)
-            check("held summary text", heldSummary.text, "pr-12254-head +2")
+            check("held summary text", heldSummary.text, "pr-4821-review +2")
             check("held summary symbol", heldSummary.symbol, "circle.fill")
 
             // Empty output must decode to nothing rather than throw.
@@ -53,7 +53,7 @@ enum Selftest {
             let pinned = try BatonClient.decode(Fixtures.pinnedByHand)
             let pinnedSummary = MenuSummary.from(containers: pinned, installed: true)
             check("pinned symbol", pinnedSummary.symbol, "hand.raised.fill")
-            check("pinned text", pinnedSummary.text, "CCP-17161-re")
+            check("pinned text", pinnedSummary.text, "main")
             if let container = pinned.first {
                 checkTrue("pinned holder text", container.holderDescription.contains("held by hand"),
                           container.holderDescription)
@@ -103,48 +103,48 @@ private enum Fixtures {
     static let heldWithQueue = """
         [
           {
-            "container": "cmp-client",
+            "container": "web",
             "running": true,
             "holder": {
-              "label": "pr-12254-head",
-              "tree": "/Users/guru.gayen/newscred/cmp-client/.worktrees/pr-12254",
+              "label": "pr-4821-review",
+              "tree": "/repo/.worktrees/pr-4821",
               "kind": "session",
               "heldFor": "4m12s",
               "remaining": "15m48s",
               "pinned": false
             },
-            "serving": "pr-12254",
+            "serving": "pr-4821",
             "status": "ready",
             "drifted": false,
             "queue": [
-              {"position": 1, "label": "pr-12277-review", "tree": "/t/a", "waiting": "2m10s"},
-              {"position": 2, "label": "CCP-18046", "tree": "/t/b", "waiting": "30s"}
+              {"position": 1, "label": "feature-search", "tree": "/t/a", "waiting": "2m10s"},
+              {"position": 2, "label": "fix-login", "tree": "/t/b", "waiting": "30s"}
             ]
           }
         ]
         """
 
     static let free = """
-        [{"container":"cmp-client","running":true,"holder":null,
+        [{"container":"web","running":true,"holder":null,
           "serving":"main","status":"ready","drifted":false,"queue":[]}]
         """
 
     static let pinnedByHand = """
-        [{"container":"cmp-client","running":true,
-          "holder":{"label":"CCP-17161-re","tree":"/t/main","kind":"human","heldFor":"3m00s",
+        [{"container":"web","running":true,
+          "holder":{"label":"main","tree":"/t/main","kind":"human","heldFor":"3m00s",
                     "pinned":true,"note":"debugging by hand"},
           "serving":"main","status":"ready","drifted":false,"queue":[]}]
         """
 
     static let drifted = """
-        [{"container":"cmp-client","running":true,
-          "holder":{"label":"pr-12254-head","tree":"/t/a","kind":"session","heldFor":"10s",
+        [{"container":"web","running":true,
+          "holder":{"label":"pr-4821-review","tree":"/t/a","kind":"session","heldFor":"10s",
                     "remaining":"19m50s","pinned":false},
           "serving":"main","status":"ready","drifted":true,"queue":[]}]
         """
 
     static let dockerDown = """
-        [{"container":"cmp-client","running":false,"holder":null,"drifted":false,"queue":[],
-          "error":"docker inspect cmp-client: exit status 1"}]
+        [{"container":"web","running":false,"holder":null,"drifted":false,"queue":[],
+          "error":"docker inspect web: exit status 1"}]
         """
 }
