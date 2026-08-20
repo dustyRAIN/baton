@@ -158,3 +158,27 @@ func TestExtraPatternsCoverAReverseProxy(t *testing.T) {
 		t.Error("without the declared pattern this is undetectable, which is why the flag exists")
 	}
 }
+
+func TestBatonOnALaterLineStillCounts(t *testing.T) {
+	// A shell block that takes the baton and then tests is the shape sessions
+	// actually use. Recognising only ; & | as separators blocked it.
+	command := "export PATH=/usr/local/bin:$PATH\nbaton take web --wait\nnpx playwright test"
+	if needsContainer(bashCall(command), guardPattern) {
+		t.Errorf("a multi-line script that takes the baton first must be allowed:\n%s", command)
+	}
+}
+
+func TestUnrelatedWorkMentioningTheContainerIsNotGuarded(t *testing.T) {
+	// The container's name appearing near the word "test" used to be enough to
+	// block, which caught ordinary work in other repositories.
+	commands := []string{
+		"go test ./internal/cli/",
+		"grep -r cmp-client . && go test ./...",
+		"echo 'cmp-client is the container' > notes.txt",
+	}
+	for _, command := range commands {
+		if needsContainer(bashCall(command), guardPattern) {
+			t.Errorf("%q does not touch the container and must run freely", command)
+		}
+	}
+}
