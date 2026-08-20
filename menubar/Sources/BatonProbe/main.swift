@@ -13,7 +13,7 @@ if CommandLine.arguments.contains("--selftest") {
 
 guard let executable = BatonClient.executable else {
     print("baton binary: NOT FOUND")
-    print("looked in /usr/local/bin, /opt/homebrew/bin, and ~/newscred/baton/bin")
+    print("looked in /usr/local/bin, /opt/homebrew/bin and ~/.local/bin")
     exit(1)
 }
 print("baton binary: \(executable)")

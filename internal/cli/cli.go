@@ -54,6 +54,8 @@ func Run(arguments []string, stdout, stderr io.Writer) int {
 		"renew":  runRenew,
 		"init":   runInit,
 		"guard":  runGuard,
+
+		"install-skill": runInstallSkill,
 	}
 
 	if handler, found := handlers[command]; found {
@@ -90,6 +92,7 @@ func usage(out io.Writer) {
 
   baton init <container>    install the supervisor so handoffs skip a restart
   baton guard               PreToolUse hook: refuse container work without the baton
+  baton install-skill       install the Claude Code skill that teaches sessions to use this
 
 Every command takes --tree to name a worktree explicitly. It defaults to the
 worktree containing the current directory.

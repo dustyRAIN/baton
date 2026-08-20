@@ -158,7 +158,7 @@ func buildReport(state *store.State, name string, now time.Time) Report {
 	serving, status := container.Serving()
 	entry.Status = status
 	if serving != "" {
-		entry.Serving = prettyContainerPath(serving)
+		entry.Serving = prettyContainerPath(serving, container.CodeMount)
 	}
 	if entry.Holder != nil && serving != "" {
 		if wanted, err := container.ContainerPath(entry.Holder.Tree); err == nil {
@@ -230,8 +230,11 @@ func writeReport(out io.Writer, entry Report, queueOnly bool) {
 
 // prettyContainerPath trims the container's code prefix so status output reads
 // as worktree names rather than absolute paths.
-func prettyContainerPath(containerPath string) string {
-	trimmed := strings.TrimPrefix(containerPath, "/code")
+func prettyContainerPath(containerPath, codeMount string) string {
+	if codeMount == "" {
+		codeMount = "/code"
+	}
+	trimmed := strings.TrimPrefix(containerPath, codeMount)
 	trimmed = strings.TrimPrefix(trimmed, "/.worktrees/")
 	trimmed = strings.TrimPrefix(trimmed, "/")
 	if trimmed == "" {

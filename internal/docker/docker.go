@@ -50,9 +50,14 @@ type Container struct {
 	Running bool
 	Mounts  []Mount
 
-	// CodeRoot is the host directory mounted at /code — in other words the
-	// main clone. Every worktree baton can switch to lives underneath it.
+	// CodeRoot is the host directory holding the repository — in other words
+	// the main clone. Every worktree baton can switch to lives underneath it.
 	CodeRoot string
+
+	// CodeMount is where CodeRoot appears inside the container. Conventionally
+	// /code, but projects also use /app or /usr/src/app, so it is detected
+	// rather than assumed.
+	CodeMount string
 
 	// Ports maps a container port to the host port it is published on.
 	Ports map[int]int
@@ -151,12 +156,12 @@ func Inspect(name string) (*Container, error) {
 	container := &Container{Name: name, Running: entry.State.Running, Command: entry.Config.Cmd}
 	for _, mount := range entry.Mounts {
 		container.Mounts = append(container.Mounts, Mount{Source: mount.Source, Destination: mount.Destination})
-		if mount.Destination == "/code" {
-			container.CodeRoot = mount.Source
-		}
 	}
+	container.CodeRoot, container.CodeMount = findCodeMount(container.Mounts)
 	if container.CodeRoot == "" {
-		return nil, fmt.Errorf("container %s has no bind mount at /code, so baton cannot tell where its code lives", name)
+		return nil, fmt.Errorf("container %s has no bind mount that looks like a git repository, "+
+			"so baton cannot tell where its code lives — set BATON_CODE_MOUNT to the path inside "+
+			"the container where the repo is mounted", name)
 	}
 
 	container.Ports = map[int]int{}
@@ -195,6 +200,36 @@ func Inspect(name string) (*Container, error) {
 	return container, nil
 }
 
+// findCodeMount works out which bind mount carries the repository.
+//
+// An explicit BATON_CODE_MOUNT wins. Otherwise the mount whose host side is a
+// git repository is the right one, which is more reliable than matching a path
+// convention. /code is preferred only to break ties, since that is the most
+// common convention and some setups mount the repo twice.
+func findCodeMount(mounts []Mount) (hostRoot, containerPath string) {
+	wanted := os.Getenv("BATON_CODE_MOUNT")
+
+	var fallbackRoot, fallbackPath string
+	for _, mount := range mounts {
+		if wanted != "" {
+			if mount.Destination == wanted {
+				return mount.Source, mount.Destination
+			}
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(mount.Source, ".git")); err != nil {
+			continue
+		}
+		if mount.Destination == "/code" {
+			return mount.Source, mount.Destination
+		}
+		if fallbackRoot == "" {
+			fallbackRoot, fallbackPath = mount.Source, mount.Destination
+		}
+	}
+	return fallbackRoot, fallbackPath
+}
+
 // ControlPath returns the host path of one of baton's control files.
 func (container *Container) ControlPath(name string) string {
 	return filepath.Join(container.CodeRoot, ControlDir, name)
@@ -223,9 +258,9 @@ func (container *Container) ContainerPath(hostPath string) (string, error) {
 			absolute, codeRoot, container.Name)
 	}
 	if relative == "." {
-		return "/code", nil
+		return container.CodeMount, nil
 	}
-	return filepath.ToSlash(filepath.Join("/code", relative)), nil
+	return filepath.ToSlash(filepath.Join(container.CodeMount, relative)), nil
 }
 
 // RequestTree asks the supervisor to serve a different worktree by writing the

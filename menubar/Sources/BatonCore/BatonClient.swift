@@ -128,7 +128,7 @@ public enum BatonClient {
     private static let candidatePaths = [
         "/usr/local/bin/baton",
         "/opt/homebrew/bin/baton",
-        NSHomeDirectory() + "/newscred/baton/bin/baton",
+        NSHomeDirectory() + "/.local/bin/baton",
     ]
 
     public static var executable: String? {

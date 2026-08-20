@@ -1,244 +1,488 @@
 # baton
 
-One Docker container, many git worktrees, one at a time.
+**One Docker dev container, many git worktrees, one at a time.**
 
-If you work on several branches at once — each in its own worktree, each with an
-agent or a person driving it — they all need the same dev container to run
+If you work on several branches at once — each in its own worktree, each driven
+by a person or a coding agent — they all need the same dev container to run
 functional tests in. Only one can have it. baton is the queue that decides who,
 and hands it over cleanly when they are done.
 
 ```
-$ baton status cmp-client
-cmp-client
-  holder    pr-12254-head          4m12s in, 15m48s left
-  serving   pr-12254               ready
-  queue     1. pr-12277-review     waiting 2m10s
-            2. CCP-18046           waiting 30s
+$ baton status web
+web
+  holder    pr-4821-review         4m12s in, 15m48s left
+  serving   pr-4821                ready
+  queue     1. feature-search      waiting 2m10s
+            2. fix-login           waiting 30s
 ```
 
-## Why it is not just a lock file
+---
+
+## Contents
+
+- [Why this is not just a lock file](#why-this-is-not-just-a-lock-file)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Setting up a container](#setting-up-a-container)
+- [Everyday use](#everyday-use)
+- [Taking over by hand](#taking-over-by-hand)
+- [Using it with Claude Code](#using-it-with-claude-code)
+- [Other stacks: strategies](#other-stacks-strategies)
+- [Repos with database migrations](#repos-with-database-migrations)
+- [Menu bar app (macOS)](#menu-bar-app-macos)
+- [Command reference](#command-reference)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+
+---
+
+## Why this is not just a lock file
 
 Two things make this harder than a mutex.
 
-**The container has to follow the baton.** Taking the lock is useless if the dev
+**The container has to follow the baton.** Taking a lock is useless if the dev
 server is still serving somebody else's branch — your tests pass against their
-code and you never find out. So a grant is not reported until the container is
-actually serving your tree and answering on its port.
+code and you never find out. So baton does not report a grant until the
+container is actually serving your tree and answering on its port, and
+`baton check` re-verifies that against the container rather than trusting its
+own bookkeeping.
 
 **Handoffs have to be cheap.** If switching trees costs five minutes, nobody
-gives the baton back between test runs and the queue seizes up. baton avoids
-restarting the container at all: a supervisor inside it moves the dev server
-between worktrees, sharing one `node_modules` per lockfile and keeping a build
-cache per tree.
+gives the container back between test runs and the queue seizes up. baton never
+restarts the container: a supervisor inside it moves the app between worktrees,
+sharing one dependency directory per lockfile and keeping build caches per tree.
+Measured on a large React app, a warm handoff is about 30 seconds.
+
+---
+
+## Requirements
+
+| | |
+| --- | --- |
+| **OS** | macOS or Linux. The menu bar app is macOS 14+ only; the CLI is portable. |
+| **Docker** | Any daemon. The container must bind-mount your repository. |
+| **Build** | Go 1.22+. Swift 6 / Xcode command line tools for the menu bar app. |
+| **Git** | Worktrees, and see the constraint below. |
+
+Three things about your container have to be true.
+
+**1. The repository is bind-mounted into it.** baton finds the mount by looking
+for one whose host side is a git repository, so `/code`, `/app`, `/usr/src/app`
+and anything else all work. Set `BATON_CODE_MOUNT` to the path inside the
+container if the guess is ever wrong.
+
+**2. You can change how the container starts.** baton replaces the container's
+`command` with its supervisor, normally through a `docker-compose.override.yml`
+that `baton init` writes for you.
+
+**3. Your worktrees live inside the mounted directory.** This is the constraint
+people trip on. The container can only see what is under the mount, so a
+worktree somewhere else is invisible to it.
+
+```bash
+# Good: inside the repo, so the container already sees it. No extra mounts.
+git worktree add .worktrees/pr-4821 -b pr-4821-review origin/main
+
+# Bad: outside the mount, invisible to the container.
+git worktree add ../pr-4821 -b pr-4821-review origin/main
+```
+
+Add `.worktrees/` to `.git/info/exclude` so it stays out of git status.
+
+**Optional but recommended:** `privileged: true` on the container. baton uses
+bind mounts inside the container to share one dependency directory across
+worktrees with the same lockfile. Without it, each tree installs its own — which
+still works, just slower and larger.
+
+---
 
 ## Install
 
 ```bash
-make install            # /usr/local/bin/baton
+git clone <this-repo> baton
+cd baton
+make install                  # builds and installs to /usr/local/bin/baton
 ```
 
-Then, once per container:
+Use `PREFIX=~/.local make install` to install somewhere else.
 
 ```bash
-baton init cmp-client --dry-run   # see what it detected, change nothing
-baton init cmp-client
+make check                    # gofmt, go vet, go test
 ```
 
-That installs the supervisor, writes a starter strategy for whatever stack it
-detected, hides its files from git, and points the container at the supervisor
-via `docker-compose.override.yml`. One restart picks it up; after that the
-container stays up and only the app moves.
+---
 
-## Other repos and other stacks
+## Setting up a container
 
-Nothing about the queue is stack-specific — it is keyed by container name and
-works for any of them today. The *swap* is where repos differ, and that lives
-behind hooks in `.baton/strategy.sh`, sourced by the supervisor after its own
-defaults so anything the file defines wins.
+Look before you leap. This writes nothing:
 
-| Hook | Default |
-| --- | --- |
-| `baton_fingerprint` | hash the lockfile, so trees that match can share a store |
-| `baton_wait_deps` | nothing |
-| `baton_prepare` | pnpm/yarn/npm install with a shared `node_modules`, or pip install |
-| `baton_migrate` | `alembic upgrade head`, refusing to go backwards |
-| `baton_start` | the stack's usual start command |
-| `baton_health` | HTTP GET the detected port and path |
+```bash
+baton init web --dry-run
+```
 
-`baton init` fills in what it can detect: the stack from the lockfile, the port
-and health path from the container's own healthcheck (falling back to `PORT` in
-the environment), and the command it is replacing so anything else that runner
-did can be ported over.
+```
+container   web
+code root   /Users/you/projects/app
+stack       pnpm
+health      port 3000, path /
+migrations  false
+command     /code/docker/entrypoint.sh
 
-Helpers available to a strategy: `baton_share_into <path>` for a dependency
-directory shared between trees with the same lockfile, `baton_cache_into <path>`
-for build state that must stay per-tree, `baton_log`, and `note` for something a
-human should see in `baton status`.
+would write /Users/you/projects/app/.baton/strategy.sh:
+...
+```
 
-The file runs as root in a privileged container on every switch, exactly like
-the runner script it replaces. Keep it in the repo so it gets reviewed.
+Check that the stack, port and code root are right, then:
 
-### Repos with migrations
+```bash
+baton init web
+```
 
-Worth knowing before you point baton at one. The database is shared between
-every worktree while the schemas are not, so switching to a branch whose
-migrations are *behind* the database gets a silent no-op from `upgrade head` and
-then runs against a schema from the future.
+That does four things:
 
-The default goes forward automatically, never backward, and records a note —
-visible in `baton status` — when the tree and the database disagree. Treat
-migration-dependent results from a noted tree as untrustworthy. Fixing it
-properly means a downgrade, which destroys data, so baton will not do it for
-you.
+1. installs the supervisor at `<repo>/.baton/supervisor.sh`
+2. writes a starter `<repo>/.baton/strategy.sh` for the detected stack
+3. adds `.baton/` to `.git/info/exclude` so it stays out of git
+4. writes `docker-compose.override.yml` pointing the container at the supervisor
+
+Then **recreate** the container — a restart is not enough, because the `command`
+has to change:
+
+```bash
+docker compose up -d web      # or your project's wrapper
+baton status web
+```
+
+After that one recreate, the container stays up permanently and only the app
+moves between trees.
+
+---
 
 ## Everyday use
 
 ```bash
-baton take cmp-client --wait      # block until it is yours, then run tests
-baton check cmp-client            # still mine? exit 0 yes, 2 no
-baton pass cmp-client             # give it back
+baton take web --wait     # block until it is yours AND serving your tree
+# ... run your tests ...
+baton check web           # still mine? exit 0 yes, 2 no
+baton pass web            # give it back
 ```
 
-Take it for the test run, not for the whole session. Generating code does not
-need the container — pass it back and take it again when you next need to run
-something.
+**Take it for the test run, not the whole session.** Writing code does not need
+the container. Handoffs are cheap precisely so you can give it back between
+iterations and let someone else in.
 
-`--wait` is the one to run in the background. It sits in line, and when it wins
-it performs the swap and exits, which is your signal that the container is ready
-and serving your tree.
+`--wait` is the one to background. It sits in line, and when it wins it performs
+the swap and exits — so its exit *is* the signal that the container is ready and
+serving your tree. Without `--wait`, `take` returns immediately: exit 0 got it,
+exit 2 did not.
+
+Holds carry a **20 minute lease** by default (`--lease` to change, `renew` to
+extend). If your session dies mid-test, the lease lapses and the queue moves on
+without anyone having to notice.
+
+### The habit that matters
+
+After every batch of tests, run `baton check`. If it exits 2, **throw those
+results away**. You were preempted, or the swap failed, and the tests you just
+ran were against somebody else's code. They will have passed or failed
+perfectly convincingly.
+
+---
 
 ## Taking over by hand
 
 ```bash
-baton grab cmp-client --note "looking at something"
-baton drop cmp-client
+baton grab web --note "debugging something"
+baton drop web
 ```
 
-`grab` displaces whoever holds it, switches the container back to your main
-clone, and pins it. Sessions in the queue stay in the queue and stop advancing.
+`grab` displaces whoever holds it, switches the container to your main clone,
+and **pins** it. Sessions in the queue stay in the queue and stop advancing.
 Nothing moves until you `drop`.
 
-A session that was displaced finds out the next time it runs `baton check`,
-which is why the rule matters: **check after every test batch, and throw the
-results away if the answer is no.**
+Human holds never expire. If you took it by hand, only you give it back.
 
-## Making it enforced rather than polite
+---
+
+## Using it with Claude Code
+
+Two pieces: a skill so sessions *know* about baton, and a hook so they *cannot
+skip it*.
+
+### The skill
+
+```bash
+baton install-skill
+```
+
+Installs to `~/.claude/skills/baton/SKILL.md`. Open it and replace `<container>`
+with the container your project shares.
+
+**Why user level and not in the repo.** Claude Code keys both memory and project
+settings to the session's working directory. A session started in a git worktree
+gets its own, empty one and never sees anything written for the main clone. A
+user-level skill is the only placement that reaches every session wherever it
+starts — which matters most for exactly the worktree sessions this tool is for.
+
+Skills are read at startup, so start a new session to pick it up.
+
+### The guard hook
 
 A rule that sessions should take the baton first gets followed most of the time
-and forgotten the rest, and the failure is silent — the tests pass, just against
-the wrong branch. `baton guard` closes that gap as a Claude Code PreToolUse hook.
-Add to `.claude/settings.local.json`:
+and forgotten the rest, and the failure is silent. `baton guard` reads a
+PreToolUse payload on stdin and refuses Playwright calls and container-bound
+shell commands from a worktree that does not hold the baton.
+
+Add to **`~/.claude/settings.json`** — merge into the existing `PreToolUse`
+array rather than replacing it:
 
 ```json
-"hooks": {
-  "PreToolUse": [
-    {
-      "matcher": "Bash|mcp__playwright__.*",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "/usr/local/bin/baton guard --container cmp-client",
-          "timeout": 10,
-          "statusMessage": "Checking the baton"
-        }
-      ]
-    }
-  ]
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|mcp__playwright__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/baton guard --container web",
+            "timeout": 10,
+            "statusMessage": "Checking the baton"
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-It refuses Playwright calls and container-bound shell commands from a worktree
-that does not hold the baton, and tells the caller what to run instead.
+**Use user settings, not `.claude/settings.local.json`.** That file is commonly
+gitignored, so it will never exist in a freshly created worktree — the exact
+sessions that most need guarding. User settings load everywhere.
 
-It fails **open** on infrastructure trouble and **closed** only on a real
-violation. An unreadable payload, an unresolvable worktree, an unreachable
-Docker daemon, or a container nobody has queued for all let the call through. It
-denies only when the state file positively says somebody else holds the baton,
-or when the holder's own tree is not what the container is serving. A guard that
-blocked everything whenever it got confused would be worse than no guard.
+Cost is about 8 ms per Bash call, and it fails open immediately outside a git
+repository, so it is a no-op in unrelated projects.
 
-baton's own commands are never matched — guarding them would deadlock a session
+**Reverse proxies.** If you reach your app through a proxy on a different host
+or port than the container publishes, baton cannot discover that. Declare it:
+
+```
+baton guard --container web --pattern 'myapp\.localhost,:8443'
+```
+
+Comma-separated regexes, added to the patterns baton builds from the container's
+name and published port.
+
+**What it will and will not block.** It fails **open** on infrastructure
+trouble — unreadable payload, unresolvable worktree, Docker down, or a container
+nobody has queued for. It denies only when the state file positively says
+somebody else holds the baton, or when the holder's own tree is not what the
+container is serving. A guard that blocked everything whenever it got confused
+would be worse than no guard.
+
+baton's own commands are never matched. Guarding them would deadlock a session
 that is being told to take the baton.
 
-## Menu bar app
+### Multiple containers
+
+One hook entry per container:
+
+```json
+{ "matcher": "Bash|mcp__playwright__.*",
+  "hooks": [{ "type": "command", "command": "/usr/local/bin/baton guard --container web" },
+            { "type": "command", "command": "/usr/local/bin/baton guard --container api" }] }
+```
+
+---
+
+## Other stacks: strategies
+
+Nothing about the queue is stack-specific — it is keyed by container name and
+works for any container today. The *swap* is where projects differ, and that
+lives behind hooks in `<repo>/.baton/strategy.sh`, sourced by the supervisor
+after its own defaults so anything the file defines wins.
+
+| Hook | Default |
+| --- | --- |
+| `baton_fingerprint` | hash the lockfile, so matching trees share one dependency store |
+| `baton_wait_deps` | nothing |
+| `baton_prepare` | pnpm / yarn / npm install with a shared `node_modules`, or pip install |
+| `baton_migrate` | `alembic upgrade head`, forward only |
+| `baton_start` | the stack's usual start command; must not return |
+| `baton_health` | HTTP GET the detected port and path |
+
+Hooks run with the worktree as their working directory and these available:
+
+| Variable | |
+| --- | --- |
+| `BATON_TREE` | the worktree being served |
+| `BATON_CODE` | the repository root inside the container |
+| `BATON_CONTROL` | `$BATON_CODE/.baton` |
+| `BATON_STORE` | shared dependency directory for this tree's fingerprint |
+| `BATON_CACHE` | per-tree cache directory |
+| `BATON_PORT` | the port to health-check |
+| `BATON_STACK` | detected stack |
+
+| Helper | |
+| --- | --- |
+| `baton_share_into <path>` | bind-mount the shared store here (dependencies) |
+| `baton_cache_into <path>` | bind-mount a per-tree directory here (build state) |
+| `baton_log <text>` | write to the supervisor log |
+| `note <text>` | surface something to a human in `baton status` |
+
+A Python service with a database and a dependency, for example:
 
 ```bash
-make menubar-install      # /Applications/Baton.app
+#!/bin/bash
+BATON_PORT=5000
+BATON_HEALTH_PATH=/_status
+
+baton_wait_deps() {
+    while ! nc -z -w1 postgres 5432; do sleep 1; done
+}
+
+baton_prepare() {
+    pip3 install -r requirements.txt
+    pip3 install -e .
+}
+
+baton_start() { exec gunicorn --bind 0.0.0.0:$BATON_PORT myapp.wsgi:app; }
 ```
 
-An agent app: menu bar only, no Dock icon. It shows the current holder and how
-many are waiting, and gives you Take over / Release without a terminal.
+`baton init` fills in what it can detect: the stack from the lockfile, the port
+and health path from the container's own healthcheck (falling back to `PORT` in
+its environment), and the command it is replacing — so anything that runner did
+beyond installing and starting is visible and can be ported across.
+
+The strategy file runs **as root inside the container on every switch**, exactly
+like the runner script it replaces. Keep it in the repo where it gets reviewed.
+`baton init` never overwrites one that already exists.
+
+---
+
+## Repos with database migrations
+
+Read this before pointing baton at one.
+
+The database is shared between every worktree while the schemas are not. Switch
+to a branch whose migrations are *behind* the database and `upgrade head` is a
+silent no-op — that branch then runs against a schema from the future, and
+nothing tells you.
+
+baton's rule is **forward automatically, never backward**. When the tree and the
+database disagree it records a note, visible in `baton status`:
 
 ```
-◉ pr-12254-head +2      held, two waiting
-⚠ pr-12254-head         holds the lock, container is serving someone else
-✋ CCP-17161-re          taken by hand, queue frozen
+web
+  holder    old-branch             2m10s in, 17m50s left
+  serving   old-branch             ready
+  note      database is at 4f2a1c but this tree expects 9b3d07 — the schema is
+            ahead of the branch. Migration-dependent results are not trustworthy.
+```
+
+Fixing it properly means a downgrade, which destroys data, so baton will not do
+it for you. Treat migration-dependent results from a noted tree as untrustworthy.
+
+The default handles alembic. For anything else define `baton_migrate` and keep
+the same rule.
+
+---
+
+## Menu bar app (macOS)
+
+```bash
+make menubar-install          # /Applications/Baton.app
+```
+
+An agent app: menu bar only, no Dock icon. Shows the current holder and how many
+are waiting, with Take over / Release buttons.
+
+```
+◉ pr-4821-review +2     held, two waiting
+⚠ pr-4821-review        holds the lock, container is serving someone else
+✋ main                  taken by hand, queue frozen
 ○ free                  nobody has it
 ```
 
 It shells out to `baton status --json` every two seconds rather than reading the
-state file, so there is only ever one implementation of the rules.
+state file, so there is only ever one implementation of the rules. Add it to
+Login Items to keep it around.
 
 If it looks wrong, ask it what it sees:
 
 ```bash
 cd menubar
-swift run baton-probe              # what the menu bar is rendering, same code path
-swift run baton-probe --selftest   # check the decoding against captured CLI output
+swift run baton-probe             # what the menu bar is rendering, same code path
+swift run baton-probe --selftest  # check decoding against captured CLI output
 ```
 
-The self-check is a plain binary rather than XCTest so it runs on a machine with
-Command Line Tools and no Xcode, where SwiftPM cannot see XCTest.
+---
 
-## Commands
+## Command reference
 
-| Command | What it does |
+| Command | |
 | --- | --- |
-| `baton take <container>` | Take the baton. `--wait` to queue, `--lease` to set how long. |
+| `baton take <container>` | Take it. `--wait` to queue, `--lease` for how long, `--no-swap` to leave the container alone. |
 | `baton pass <container>` | Give it back. |
-| `baton renew <container>` | Extend your hold before the lease lapses. |
-| `baton check <container>` | Exit 0 if you still hold it and the container agrees, 2 otherwise. |
-| `baton status [container]` | Holder, what is being served, and the queue. `--json` for scripts. |
-| `baton line [container]` | Just the queue. |
-| `baton grab <container>` | Take over by hand and pin it. |
-| `baton drop <container>` | Release a hand-taken baton. |
+| `baton renew <container>` | Extend before the lease lapses. |
+| `baton check <container>` | Exit 0 if it is still yours *and* the container agrees. |
+| `baton status [container]` | Holder, what is served, notes, queue. `--json` for scripts. |
+| `baton line [container]` | The queue only. |
+| `baton grab <container>` | Take over by hand and pin it. `--note` to say why. |
+| `baton drop <container>` | Release a hand-taken container. |
 | `baton init <container>` | Install the supervisor and a starter strategy. `--dry-run` to look first. |
+| `baton install-skill` | Install the Claude Code skill. |
 | `baton guard` | PreToolUse hook. Reads a payload on stdin, allows or denies. |
 
-Every command takes `--tree` to name a worktree. It defaults to the worktree
+`--tree` names a worktree explicitly on any command; it defaults to the worktree
 containing the current directory.
 
-Exit code `2` always means "the answer is no". `1` means something broke.
+**Exit codes.** `0` yes. `2` no — a real answer, not a failure. `1` something
+broke. Anything scripting baton should treat 2 as a normal outcome.
 
-## How it decides who is who
+**Environment.** `BATON_HOME` moves the state directory (default `~/.baton`).
+`BATON_CODE_MOUNT` overrides code-mount detection.
 
-A worktree path is the identity. Sessions do not have stable process ids across
-their tool calls, but each one works in exactly one worktree, so the path is
-both stable and readable.
+---
 
-That has a consequence worth knowing: two sessions in the *same* worktree count
-as one holder. They would already be fighting over the same files, so this is
-not a new problem, but baton will not save you from it.
+## How it works
 
-## What happens when things die
+**Identity is the worktree path.** Coding agents have no stable process or
+session id across their tool calls, but each works in exactly one worktree, so
+the path is both stable and readable. One consequence: two sessions in the *same*
+worktree count as one holder. They would already be fighting over the same files,
+so this is not a new problem, but baton will not save you from it.
 
-- **A session closed while waiting** — its queue entry names its process, and a
-  dead process is dropped from the line.
-- **A session closed while holding** — the hold has a lease and lapses on its
-  own. Default 20 minutes; `renew` pushes it out.
-- **A swap that fails** — the baton is handed straight back, so a broken tree
-  cannot block everyone behind it.
-- **Docker down** — the queue still reads and writes. Only swaps need Docker.
+**No daemon.** State is one JSON file at `~/.baton/state.json`, guarded by an
+flock, written atomically. Every command opens it, mutates it, writes it back.
+Contention is a handful of sessions on one machine, so the simplicity is worth
+more than the throughput a server would buy.
 
-Human holds never expire. That is deliberate: if you took it by hand, only you
-should give it back.
+**No `docker exec` on the hot path.** The repository is bind-mounted, so baton
+writes control files on the host and the supervisor inside the container picks
+them up. A handoff is a file write. Everything is inspectable with `cat`:
 
-## State
+```
+<repo>/.baton/
+  supervisor.sh     installed by baton init
+  strategy.sh       yours to edit
+  current-tree      what baton wants served
+  serving           what the supervisor is actually serving
+  status            starting | ready | failed | stopped
+  port              the port the supervisor bound
+  notes             things a human should see
+  supervisor.log
+  store/            shared dependencies, keyed by lockfile hash
+  cache/            per-tree build caches
+```
 
-One JSON file at `~/.baton/state.json`, guarded by an flock. No daemon. Set
-`BATON_HOME` to point somewhere else.
+**Failure handling.** A closed session's queue entry names its process, and a
+dead process is dropped from the line. A closed session's *hold* lapses with its
+lease. A swap that fails hands the baton straight back, so a broken tree cannot
+block the queue. With Docker down, queue commands still work; only swaps need it.
 
-## Layout
+**Layout.**
 
 ```
 cmd/baton              entry point
@@ -246,8 +490,8 @@ internal/core          queue rules — pure functions, no I/O
 internal/store         state file and locking
 internal/tree          worktree resolution
 internal/docker        container inspection and the swap
-internal/supervisor    the script that runs inside the container, and its hooks
-internal/cli           subcommands, including the guard hook
+internal/supervisor    the in-container script, its hooks, and the skill
+internal/cli           subcommands
 
 menubar/
   Sources/BatonCore    CLI client and the menu bar line, no UI
@@ -255,8 +499,57 @@ menubar/
   Sources/BatonProbe   diagnostics and the self-check
 ```
 
-`internal/core` is where the interesting decisions live and it has no
-dependencies, so the rules can be read and tested on their own.
+`internal/core` holds the interesting decisions and has no dependencies, so the
+rules can be read and tested on their own. The Go CLI has no external
+dependencies; the Swift app has none beyond system frameworks. `baton status
+--json` is the only interface between them.
 
-The Go CLI has no external dependencies and the Swift app has none beyond the
-system frameworks. `baton status --json` is the only interface between them.
+---
+
+## Troubleshooting
+
+**`no bind mount that looks like a git repository`** — the container does not
+mount your repo, or mounts it somewhere baton did not recognise. Check
+`docker inspect <container>` and set `BATON_CODE_MOUNT` to the path inside the
+container.
+
+**`<tree> is outside <root>, so container cannot see it`** — the worktree is not
+under the mounted directory. See [Requirements](#requirements); move it under
+`.worktrees/`.
+
+**`has no supervisor installed`** — `baton init` ran but the container was not
+recreated, so it is still running its old command. Recreate rather than restart.
+
+**`bind mount failed`** in the supervisor log — the container is not
+`privileged`. Either add it, or define `baton_prepare` in your strategy without
+`baton_share_into` so each tree installs its own dependencies.
+
+**Swaps time out** — read `<repo>/.baton/supervisor.log`. Usually the health
+check is wrong: `BATON_PORT` or `BATON_HEALTH_PATH` in the strategy does not
+match what the app actually serves.
+
+**Status disagrees with reality** — `baton status` compares its bookkeeping
+against the container and flags drift. Trust the container. `baton take` again
+to force a swap.
+
+---
+
+## Known limitations
+
+**Multi-container deadlock.** A change spanning two containers needs both
+batons, and two sessions taking them in opposite orders will deadlock until the
+leases lapse. There is no atomic multi-take yet. Until there is, agree an order.
+
+**The guard is a net, not a boundary.** Any command mentioning `baton` is
+treated as coordinating, so `baton status && npx playwright test` slips through.
+Narrowing that would break `baton take --wait && npm run e2e`, which is the
+pattern sessions are told to use. It catches forgetfulness, not evasion.
+
+**One holder per worktree, not per session.** Two sessions in the same worktree
+are indistinguishable to baton.
+
+**Shared databases are only flagged, not solved.** See
+[migrations](#repos-with-database-migrations).
+
+**No Windows support.** The supervisor is bash and assumes a Linux container;
+the CLI uses Unix file locking.

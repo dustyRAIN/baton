@@ -93,9 +93,16 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 		entry := state.Get(containerName)
 		entry.Initialized = true
 		entry.CodeRoot = container.CodeRoot
+		entry.CodeMount = container.CodeMount
 		for _, name := range state.Names() {
 			if candidate := state.Get(name); candidate.Initialized {
-				managed = append(managed, managedContainer{Name: name, CodeRoot: candidate.CodeRoot})
+				mount := candidate.CodeMount
+				if mount == "" {
+					mount = "/code"
+				}
+				managed = append(managed, managedContainer{
+					Name: name, CodeRoot: candidate.CodeRoot, CodeMount: mount,
+				})
 			}
 		}
 		return nil
@@ -122,9 +129,13 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, `
 One restart is needed to pick up the supervisor. After that the container stays
-up and baton moves the dev server between trees without bouncing it:
+up and baton moves the app between trees without bouncing it. Recreate it the
+way this project normally does — a plain compose setup is:
 
-  PYENV_VERSION=localdev nc-docker up %s
+  docker compose up -d %s
+
+Use your project's wrapper instead if it has one, since the container has to be
+recreated rather than just restarted for the new command to apply.
 
 Then check it took:
 
@@ -134,8 +145,9 @@ Then check it took:
 }
 
 type managedContainer struct {
-	Name     string
-	CodeRoot string
+	Name      string
+	CodeRoot  string
+	CodeMount string
 }
 
 // installSupervisor drops the embedded script into the container's code root,
@@ -228,7 +240,9 @@ func overrideSnippet(managed []managedContainer) string {
 	fmt.Fprintf(builder, "services:\n")
 	for _, entry := range managed {
 		fmt.Fprintf(builder, "  %s:\n", entry.Name)
-		fmt.Fprintf(builder, "    command: /code/%s/supervisor.sh\n", docker.ControlDir)
+		fmt.Fprintf(builder, "    command: %s/%s/supervisor.sh\n", entry.CodeMount, docker.ControlDir)
+		fmt.Fprintf(builder, "    environment:\n")
+		fmt.Fprintf(builder, "      - BATON_CODE=%s\n", entry.CodeMount)
 	}
 	return builder.String()
 }
@@ -252,5 +266,55 @@ func describeInit(container *docker.Container, stdout io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "\nwould write %s:\n\n", container.ControlPath("strategy.sh"))
 	fmt.Fprint(stdout, strategyTemplate(stack, container))
+	return exitOK
+}
+
+// runInstallSkill writes the embedded Claude Code skill to the user's skill
+// directory.
+//
+// User level rather than project level on purpose. Claude Code keys memory and
+// project settings to the working directory, so a session started in a git
+// worktree gets a fresh, empty one and never sees anything written for the main
+// clone. A user-level skill is the only placement that reaches every session
+// wherever it starts, which is the whole point of documenting a tool sessions
+// are supposed to use before they touch the container.
+func runInstallSkill(arguments []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("install-skill", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	dir := flags.String("dir", "", "where to install (default: ~/.claude/skills/baton)")
+	force := flags.Bool("force", false, "overwrite an existing skill")
+	if _, err := parseArguments(flags, arguments); err != nil {
+		return exitError
+	}
+
+	target := *dir
+	if target == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(stderr, "baton: cannot find your home directory: %v\n", err)
+			return exitError
+		}
+		target = filepath.Join(home, ".claude", "skills", "baton")
+	}
+
+	path := filepath.Join(target, "SKILL.md")
+	if _, err := os.Stat(path); err == nil && !*force {
+		fmt.Fprintf(stderr, "baton: %s already exists; pass --force to replace it\n", path)
+		return exitError
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		fmt.Fprintf(stderr, "baton: create %s: %v\n", target, err)
+		return exitError
+	}
+	if err := os.WriteFile(path, supervisor.Skill, 0o644); err != nil {
+		fmt.Fprintf(stderr, "baton: write %s: %v\n", path, err)
+		return exitError
+	}
+
+	fmt.Fprintf(stdout, `baton: installed the skill at %s
+
+Edit it to name the container this project shares, then start a new session —
+skills are read at startup, so the one you are in now will not see it.
+`, path)
 	return exitOK
 }

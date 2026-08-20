@@ -98,9 +98,11 @@ type Container struct {
 	// carrying this flag, so one file can cover several repos.
 	Initialized bool `json:"initialized,omitempty"`
 
-	// CodeRoot is the host directory mounted at /code, remembered from init so
-	// the override can be rebuilt without Docker being up.
-	CodeRoot string `json:"codeRoot,omitempty"`
+	// CodeRoot is the host directory holding the repo, and CodeMount is where
+	// it appears inside the container. Both are remembered from init so the
+	// compose override can be rebuilt without Docker being up.
+	CodeRoot  string `json:"codeRoot,omitempty"`
+	CodeMount string `json:"codeMount,omitempty"`
 }
 
 // State is the whole file.

@@ -36,11 +36,35 @@ type hookDecision struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
 }
 
-// containerCommands matches shell commands that only make sense against the
-// shared dev container. Anything matching needs the baton first.
-var containerCommands = regexp.MustCompile(
-	`(?i)(playwright|test:e2e|nc-docker\s+(exec|test)|docker\s+exec\s+cmp-|localhost:3301|127\.0\.0\.1:3301|cmp-localdev)`,
+// genericContainerCommands matches shell commands that need a running dev
+// server whatever the project is called.
+var genericContainerCommands = regexp.MustCompile(
+	`(?i)(playwright|cypress|selenium|test:e2e|:e2e\b|e2e:)`,
 )
+
+// containerCommands builds the full pattern for one container, adding the
+// things only knowable at runtime: its name, and the port it publishes. Without
+// this the guard would only recognise the project it was first written for.
+// A project often reaches its container through a reverse proxy on a different
+// host and port than the container publishes, and no amount of inspection can
+// discover that. --pattern lets the hook declare those.
+func containerCommands(name string, port int, extra ...string) *regexp.Regexp {
+	parts := []string{genericContainerCommands.String()}
+	for _, pattern := range extra {
+		if trimmed := strings.TrimSpace(pattern); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	if name != "" {
+		quoted := regexp.QuoteMeta(name)
+		parts = append(parts, `(docker|[\w-]*docker)\s+(exec|compose\s+exec)\s+\S*`+quoted)
+		parts = append(parts, `\b`+quoted+`\b.*\b(test|e2e|curl)\b`)
+	}
+	if port != 0 {
+		parts = append(parts, fmt.Sprintf(`(localhost|127\.0\.0\.1|0\.0\.0\.0):%d`, port))
+	}
+	return regexp.MustCompile(`(?i)(` + strings.Join(parts, "|") + `)`)
+}
 
 // batonInvocation matches the tool's own commands. Guarding these would
 // deadlock the session: it could never take the baton it is being told to take.
@@ -49,8 +73,10 @@ var batonInvocation = regexp.MustCompile(`(^|[;&|]\s*)(\S*/)?baton\s`)
 func runGuard(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("guard", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	containerFlag := flags.String("container", "cmp-client", "container the guarded tools need")
+	containerFlag := flags.String("container", "", "container the guarded tools need (required)")
 	treeFlag := flags.String("tree", "", "worktree to check (default: the hook's working directory)")
+	patternFlag := flags.String("pattern", "", "extra regexes marking a command as container work, comma separated "+
+		"(for a reverse-proxy hostname or port that cannot be detected)")
 	if _, err := parseArguments(flags, arguments); err != nil {
 		return exitError
 	}
@@ -67,7 +93,22 @@ func runGuard(arguments []string, stdout, stderr io.Writer) int {
 		return allow(stdout, "")
 	}
 
-	if !needsContainer(input) {
+	if *containerFlag == "" {
+		// Misconfiguration must not block work. Say nothing and let it through.
+		return allow(stdout, "")
+	}
+
+	// The port is only knowable from the container, and Docker may be down, in
+	// which case a name-only pattern is still useful.
+	guardedPort := 0
+	if live, err := docker.Inspect(*containerFlag); err == nil {
+		guardedPort = live.DevPort()
+	}
+	extra := []string{}
+	if *patternFlag != "" {
+		extra = strings.Split(*patternFlag, ",")
+	}
+	if !needsContainer(input, containerCommands(*containerFlag, guardedPort, extra...)) {
 		return allow(stdout, "")
 	}
 
@@ -108,7 +149,7 @@ func runGuard(arguments []string, stdout, stderr io.Writer) int {
 }
 
 // needsContainer decides whether a tool call would touch the shared dev server.
-func needsContainer(input hookInput) bool {
+func needsContainer(input hookInput, pattern *regexp.Regexp) bool {
 	if strings.HasPrefix(input.ToolName, "mcp__playwright__") {
 		return true
 	}
@@ -119,7 +160,7 @@ func needsContainer(input hookInput) bool {
 	if batonInvocation.MatchString(command) {
 		return false
 	}
-	return containerCommands.MatchString(command)
+	return pattern.MatchString(command)
 }
 
 // servingMismatch reports why a holder should not trust the container, or "" if
@@ -143,7 +184,7 @@ func servingMismatch(containerName, treePath, label string) string {
 	if serving != wanted {
 		return fmt.Sprintf(
 			"%s holds the baton for %s, but the container is serving %s. Results would belong to the wrong branch. Run `baton take %s --wait` to switch it.",
-			label, containerName, prettyContainerPath(serving), containerName)
+			label, containerName, prettyContainerPath(serving, container.CodeMount), containerName)
 	}
 	if status != "ready" {
 		return fmt.Sprintf(

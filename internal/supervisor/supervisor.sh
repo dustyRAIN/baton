@@ -28,7 +28,9 @@
 
 set -uo pipefail
 
-BATON_CODE=/code
+# Where the repository is mounted. baton's compose override sets this from what
+# it detected; /code is only the fallback for a hand-written setup.
+BATON_CODE="${BATON_CODE:-/code}"
 BATON_CONTROL="$BATON_CODE/.baton"
 CURRENT_FILE="$BATON_CONTROL/current-tree"
 SERVING_FILE="$BATON_CONTROL/serving"

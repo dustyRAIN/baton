@@ -10,3 +10,10 @@ import _ "embed"
 //
 //go:embed supervisor.sh
 var Script []byte
+
+// Skill is the Claude Code skill that teaches a session how to use baton. It is
+// embedded so `baton install-skill` works from an installed binary, without
+// anyone having to know where the repository was checked out.
+//
+//go:embed skill.md
+var Skill []byte
