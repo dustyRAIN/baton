@@ -40,12 +40,56 @@ make install            # /usr/local/bin/baton
 Then, once per container:
 
 ```bash
+baton init cmp-client --dry-run   # see what it detected, change nothing
 baton init cmp-client
 ```
 
-That installs the supervisor, hides its files from git, and writes a
-`docker-compose.override.yml` pointing the container at it. One restart picks it
-up; after that the container stays up and only the dev server moves.
+That installs the supervisor, writes a starter strategy for whatever stack it
+detected, hides its files from git, and points the container at the supervisor
+via `docker-compose.override.yml`. One restart picks it up; after that the
+container stays up and only the app moves.
+
+## Other repos and other stacks
+
+Nothing about the queue is stack-specific — it is keyed by container name and
+works for any of them today. The *swap* is where repos differ, and that lives
+behind hooks in `.baton/strategy.sh`, sourced by the supervisor after its own
+defaults so anything the file defines wins.
+
+| Hook | Default |
+| --- | --- |
+| `baton_fingerprint` | hash the lockfile, so trees that match can share a store |
+| `baton_wait_deps` | nothing |
+| `baton_prepare` | pnpm/yarn/npm install with a shared `node_modules`, or pip install |
+| `baton_migrate` | `alembic upgrade head`, refusing to go backwards |
+| `baton_start` | the stack's usual start command |
+| `baton_health` | HTTP GET the detected port and path |
+
+`baton init` fills in what it can detect: the stack from the lockfile, the port
+and health path from the container's own healthcheck (falling back to `PORT` in
+the environment), and the command it is replacing so anything else that runner
+did can be ported over.
+
+Helpers available to a strategy: `baton_share_into <path>` for a dependency
+directory shared between trees with the same lockfile, `baton_cache_into <path>`
+for build state that must stay per-tree, `baton_log`, and `note` for something a
+human should see in `baton status`.
+
+The file runs as root in a privileged container on every switch, exactly like
+the runner script it replaces. Keep it in the repo so it gets reviewed.
+
+### Repos with migrations
+
+Worth knowing before you point baton at one. The database is shared between
+every worktree while the schemas are not, so switching to a branch whose
+migrations are *behind* the database gets a silent no-op from `upgrade head` and
+then runs against a schema from the future.
+
+The default goes forward automatically, never backward, and records a note —
+visible in `baton status` — when the tree and the database disagree. Treat
+migration-dependent results from a noted tree as untrustworthy. Fixing it
+properly means a downgrade, which destroys data, so baton will not do it for
+you.
 
 ## Everyday use
 
@@ -158,7 +202,7 @@ Command Line Tools and no Xcode, where SwiftPM cannot see XCTest.
 | `baton line [container]` | Just the queue. |
 | `baton grab <container>` | Take over by hand and pin it. |
 | `baton drop <container>` | Release a hand-taken baton. |
-| `baton init <container>` | Install the supervisor. |
+| `baton init <container>` | Install the supervisor and a starter strategy. `--dry-run` to look first. |
 | `baton guard` | PreToolUse hook. Reads a payload on stdin, allows or denies. |
 
 Every command takes `--tree` to name a worktree. It defaults to the worktree
@@ -202,7 +246,7 @@ internal/core          queue rules — pure functions, no I/O
 internal/store         state file and locking
 internal/tree          worktree resolution
 internal/docker        container inspection and the swap
-internal/supervisor    the script that runs inside the container
+internal/supervisor    the script that runs inside the container, and its hooks
 internal/cli           subcommands, including the guard hook
 
 menubar/

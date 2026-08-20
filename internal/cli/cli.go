@@ -291,7 +291,7 @@ func finishTake(stateStore *store.Store, container *docker.Container, worktree *
 	}
 
 	markServing(stateStore, container.Name, worktree.Path)
-	fmt.Fprintf(stdout, "baton: %s is yours (%s), serving on port %d\n", container.Name, label, container.DevPort)
+	fmt.Fprintf(stdout, "baton: %s is yours (%s), serving on port %d\n", container.Name, label, container.DevPort())
 	return exitOK
 }
 
@@ -585,7 +585,7 @@ func runGrab(arguments []string, stdout, stderr io.Writer) int {
 				return exitError
 			}
 			markServing(stateStore, containerName, worktree.Path)
-			fmt.Fprintf(stdout, "baton: serving %s on port %d\n", worktree.Label, container.DevPort)
+			fmt.Fprintf(stdout, "baton: serving %s on port %d\n", worktree.Label, container.DevPort())
 		}
 	}
 	return exitOK

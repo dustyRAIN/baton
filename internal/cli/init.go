@@ -22,6 +22,7 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	force := flags.Bool("force", false, "overwrite a compose override baton did not write")
+	dryRun := flags.Bool("dry-run", false, "show what would be written, change nothing")
 	positionals, err := parseArguments(flags, arguments)
 	if err != nil {
 		return exitError
@@ -39,12 +40,42 @@ func runInit(arguments []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
+	if *dryRun {
+		return describeInit(container, stdout)
+	}
+
 	if err := installSupervisor(container.CodeRoot); err != nil {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
 		return exitError
 	}
 	fmt.Fprintf(stdout, "baton: installed the supervisor in %s\n",
 		filepath.Join(container.CodeRoot, docker.ControlDir))
+
+	stack := detectStack(container.CodeRoot)
+	strategyPath, wrote, err := writeStrategy(container)
+	if err != nil {
+		fmt.Fprintf(stderr, "baton: %v\n", err)
+		return exitError
+	}
+	switch {
+	case wrote:
+		fmt.Fprintf(stdout, "baton: detected a %s repo", stack)
+		if container.HealthPort != 0 {
+			fmt.Fprintf(stdout, " on port %d%s", container.HealthPort, container.HealthPath)
+		}
+		fmt.Fprintf(stdout, "\nbaton: wrote a starter strategy at %s\n", strategyPath)
+	default:
+		fmt.Fprintf(stdout, "baton: kept the existing strategy at %s\n", strategyPath)
+	}
+
+	if stack == stackUnknown {
+		fmt.Fprintf(stderr, "baton: no lockfile recognised, so there are no useful defaults — "+
+			"fill in baton_prepare and baton_start in the strategy before taking the baton\n")
+	}
+	if hasMigrations(container.CodeRoot) {
+		fmt.Fprintf(stdout, "baton: this repo has migrations and the database is shared between "+
+			"worktrees; read the note in the strategy file before switching trees\n")
+	}
 
 	if excluded, err := excludeFromGit(container.CodeRoot); err != nil {
 		fmt.Fprintf(stderr, "baton: could not hide %s from git: %v\n", docker.ControlDir, err)
@@ -200,4 +231,26 @@ func overrideSnippet(managed []managedContainer) string {
 		fmt.Fprintf(builder, "    command: /code/%s/supervisor.sh\n", docker.ControlDir)
 	}
 	return builder.String()
+}
+
+// describeInit reports what init would do without touching anything. Useful for
+// looking at an unfamiliar repo before committing to supervising it.
+func describeInit(container *docker.Container, stdout io.Writer) int {
+	stack := detectStack(container.CodeRoot)
+
+	fmt.Fprintf(stdout, "container   %s\n", container.Name)
+	fmt.Fprintf(stdout, "code root   %s\n", container.CodeRoot)
+	fmt.Fprintf(stdout, "stack       %s\n", stack)
+	if container.HealthPort != 0 {
+		fmt.Fprintf(stdout, "health      port %d, path %s\n", container.HealthPort, container.HealthPath)
+	} else {
+		fmt.Fprintf(stdout, "health      not detected — set BATON_PORT in the strategy\n")
+	}
+	fmt.Fprintf(stdout, "migrations  %v\n", hasMigrations(container.CodeRoot))
+	if len(container.Command) > 0 {
+		fmt.Fprintf(stdout, "command     %s\n", strings.Join(container.Command, " "))
+	}
+	fmt.Fprintf(stdout, "\nwould write %s:\n\n", container.ControlPath("strategy.sh"))
+	fmt.Fprint(stdout, strategyTemplate(stack, container))
+	return exitOK
 }

@@ -23,6 +23,7 @@ type Report struct {
 	Status    string        `json:"status,omitempty"`
 	Drifted   bool          `json:"drifted"`
 	Queue     []QueueEntry  `json:"queue"`
+	Notes     []string      `json:"notes,omitempty"`
 	Error     string        `json:"error,omitempty"`
 }
 
@@ -152,6 +153,7 @@ func buildReport(state *store.State, name string, now time.Time) Report {
 		return entry
 	}
 	entry.Running = container.Running
+	entry.Notes = container.Notes()
 
 	serving, status := container.Serving()
 	entry.Status = status
@@ -198,6 +200,17 @@ func writeReport(out io.Writer, entry Report, queueOnly bool) {
 			}
 			fmt.Fprintf(out, "  serving   %-22s %s\n", entry.Serving, suffix)
 		}
+	}
+
+	// Notes are things that change how results should be read — an applied
+	// migration, a schema ahead of the branch. They matter more than the queue,
+	// so they go above it.
+	for index, note := range entry.Notes {
+		label := "  note     "
+		if index > 0 {
+			label = strings.Repeat(" ", len(label))
+		}
+		fmt.Fprintf(out, "%s %s\n", label, note)
 	}
 
 	if len(entry.Queue) == 0 {

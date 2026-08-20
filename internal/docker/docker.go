@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,7 +29,14 @@ const (
 	currentTreeFile = "current-tree"
 	servingFile     = "serving"
 	statusFile      = "status"
+	portFile        = "port"
+	notesFile       = "notes"
+	strategyFile    = "strategy.sh"
 )
+
+// healthURL pulls a port and path out of a container healthcheck command, which
+// is where a compose file usually records how to tell whether the app is up.
+var healthURL = regexp.MustCompile(`https?://[^/\s]*:(\d+)(/\S*)?`)
 
 // Mount is one bind mount attached to a container.
 type Mount struct {
@@ -45,8 +54,58 @@ type Container struct {
 	// main clone. Every worktree baton can switch to lives underneath it.
 	CodeRoot string
 
-	// DevPort is the host port the dev server is published on, 0 if none.
-	DevPort int
+	// Ports maps a container port to the host port it is published on.
+	Ports map[int]int
+
+	// HealthPort and HealthPath come from the container's own healthcheck,
+	// which is the most reliable statement of how to tell whether the app is
+	// answering. baton uses them rather than hardcoding anything per stack.
+	HealthPort int
+	HealthPath string
+
+	// Command is what the container is currently started with. Captured so
+	// `baton init` can point at the runner script it is about to replace,
+	// which is where any dependency waits and one-time setup steps live.
+	Command []string
+}
+
+// DevPort is the host port to health-check, or 0 when there is nothing to check.
+//
+// The supervisor writes the port it actually bound to, which is authoritative
+// because a strategy can choose one. Falling back to the healthcheck covers a
+// container that has not been supervised yet.
+func (container *Container) DevPort() int {
+	if inside := readInt(container.ControlPath(portFile)); inside != 0 {
+		if host, published := container.Ports[inside]; published {
+			return host
+		}
+	}
+	if host, published := container.Ports[container.HealthPort]; published {
+		return host
+	}
+	return 0
+}
+
+// Notes are things the supervisor wants a human to see: applied migrations, a
+// schema that is ahead of the branch, anything that changes how results should
+// be read.
+func (container *Container) Notes() []string {
+	raw := strings.TrimSpace(readFile(container.ControlPath(notesFile)))
+	if raw == "" {
+		return nil
+	}
+	lines := []string{}
+	for _, line := range strings.Split(raw, "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		lines = append(lines, parts[len(parts)-1])
+	}
+	return lines
+}
+
+// HasStrategy reports whether this repo has customised the supervisor's hooks.
+func (container *Container) HasStrategy() bool {
+	_, err := os.Stat(container.ControlPath(strategyFile))
+	return err == nil
 }
 
 // Inspect reads a container's current shape. It returns a Container with
@@ -67,6 +126,13 @@ func Inspect(name string) (*Container, error) {
 			Source      string `json:"Source"`
 			Destination string `json:"Destination"`
 		} `json:"Mounts"`
+		Config struct {
+			Cmd         []string `json:"Cmd"`
+			Env         []string `json:"Env"`
+			Healthcheck struct {
+				Test []string `json:"Test"`
+			} `json:"Healthcheck"`
+		} `json:"Config"`
 		NetworkSettings struct {
 			Ports map[string][]struct {
 				HostIP   string `json:"HostIp"`
@@ -82,7 +148,7 @@ func Inspect(name string) (*Container, error) {
 	}
 	entry := raw[0]
 
-	container := &Container{Name: name, Running: entry.State.Running}
+	container := &Container{Name: name, Running: entry.State.Running, Command: entry.Config.Cmd}
 	for _, mount := range entry.Mounts {
 		container.Mounts = append(container.Mounts, Mount{Source: mount.Source, Destination: mount.Destination})
 		if mount.Destination == "/code" {
@@ -93,11 +159,38 @@ func Inspect(name string) (*Container, error) {
 		return nil, fmt.Errorf("container %s has no bind mount at /code, so baton cannot tell where its code lives", name)
 	}
 
+	container.Ports = map[int]int{}
 	for portSpec, bindings := range entry.NetworkSettings.Ports {
-		if !strings.HasPrefix(portSpec, "3301/") || len(bindings) == 0 {
+		if len(bindings) == 0 {
 			continue
 		}
-		fmt.Sscanf(bindings[0].HostPort, "%d", &container.DevPort)
+		var inside, host int
+		fmt.Sscanf(portSpec, "%d/", &inside)
+		fmt.Sscanf(bindings[0].HostPort, "%d", &host)
+		if inside != 0 && host != 0 {
+			container.Ports[inside] = host
+		}
+	}
+
+	// The healthcheck is the container's own statement of how to tell whether
+	// it is up, so it beats guessing from the published port list — several
+	// ports are usually published and only one of them serves the app.
+	if match := healthURL.FindStringSubmatch(strings.Join(entry.Config.Healthcheck.Test, " ")); match != nil {
+		fmt.Sscanf(match[1], "%d", &container.HealthPort)
+		container.HealthPath = match[2]
+	}
+	// Not every container declares a healthcheck. A PORT in the environment is
+	// the next best statement of which published port serves the app.
+	if container.HealthPort == 0 {
+		for _, variable := range entry.Config.Env {
+			if value, found := strings.CutPrefix(variable, "PORT="); found {
+				fmt.Sscanf(value, "%d", &container.HealthPort)
+				break
+			}
+		}
+	}
+	if container.HealthPath == "" {
+		container.HealthPath = "/"
 	}
 	return container, nil
 }
@@ -184,7 +277,12 @@ func (container *Container) WaitReady(wantTree string, timeout time.Duration, po
 			return fmt.Errorf("supervisor failed to start %s — check `docker logs %s`", wantTree, container.Name)
 		}
 		if serving == wantTree && status == "ready" {
-			if container.DevPort == 0 || container.devServerAnswers() {
+			// The supervisor already health-checked using the strategy's own
+			// definition of healthy. This second check from outside only
+			// confirms the port is reachable from the host, and is skipped when
+			// nothing is published.
+			port := container.DevPort()
+			if port == 0 || container.devServerAnswers(port) {
 				return nil
 			}
 		}
@@ -197,8 +295,8 @@ func (container *Container) WaitReady(wantTree string, timeout time.Duration, po
 // devServerAnswers does a cheap liveness check against the published dev port.
 // Any HTTP response counts — we are proving the server is up, not that a
 // particular route works.
-func (container *Container) devServerAnswers() bool {
-	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(container.DevPort))
+func (container *Container) devServerAnswers(port int) bool {
+	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
 	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
 		return false
@@ -226,6 +324,14 @@ func Restart(name string) error {
 // DaemonUp reports whether the Docker daemon is reachable.
 func DaemonUp() bool {
 	return exec.Command("docker", "version", "--format", "{{.Server.Version}}").Run() == nil
+}
+
+func readInt(path string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(readFile(path)))
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func readFile(path string) string {
