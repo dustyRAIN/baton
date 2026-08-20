@@ -10,6 +10,11 @@ import SwiftUI
 /// `ImageRenderer` draws the same views offscreen, in both appearances, from
 /// fixed sample data — which also makes it a cheap regression check that no
 /// state renders blank or clipped.
+///
+/// Two things it cannot draw, so do not read them as bugs: an indeterminate
+/// ProgressView comes out as a missing glyph because it is animated, and a
+/// ScrollView lays out but its contents never rasterise — which is why these
+/// render MenuBody rather than MenuContent.
 @MainActor
 enum Snapshot {
 
@@ -23,6 +28,7 @@ enum Snapshot {
             ("06-broken", [Samples.broken]),
             ("07-empty", []),
             ("08-two-containers", [Samples.heldWithQueue, Samples.secondFree]),
+            ("09-busy", [Samples.free]),
         ]
 
         let root = URL(fileURLWithPath: directory)
@@ -30,8 +36,9 @@ enum Snapshot {
 
         for (name, containers) in cases {
             for scheme in [ColorScheme.light, .dark] {
-                let monitor = BatonMonitor(preview: containers)
-                let view = MenuContent(monitor: monitor)
+                let monitor = BatonMonitor(preview: containers,
+                                           busy: name == "09-busy" ? "Taking over web" : nil)
+                let view = MenuBody(monitor: monitor)
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 

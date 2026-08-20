@@ -10,7 +10,33 @@ struct MenuContent: View {
     let monitor: BatonMonitor
 
     var body: some View {
+        // Enough containers, queued sessions and notes will eventually outgrow
+        // any screen. Capping the height and scrolling keeps the window on
+        // screen rather than letting it place itself off the top.
+        ScrollView(.vertical) {
+            MenuBody(monitor: monitor)
+        }
+        .frame(width: Design.popoverWidth)
+        .frame(maxHeight: Design.maxPopoverHeight)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+/// The popover's contents, without the scrolling wrapper.
+///
+/// Separate because ImageRenderer lays a ScrollView out but does not rasterise
+/// what is inside it — snapshots of the whole popover come out blank. The
+/// snapshots render this directly, which also keeps them honest about the
+/// content rather than the container.
+struct MenuBody: View {
+    let monitor: BatonMonitor
+
+    var body: some View {
         VStack(alignment: .leading, spacing: Design.sectionSpacing) {
+            if let message = monitor.busyMessage {
+                BusyBanner(message: message)
+            }
+
             if let error = monitor.lastError {
                 Banner(symbol: "exclamationmark.triangle.fill", tint: .orange, text: error)
             }
@@ -33,6 +59,7 @@ struct MenuContent: View {
         }
         .padding(14)
         .frame(width: Design.popoverWidth)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -130,10 +157,40 @@ struct ContainerCard: View {
                 .disabled(!container.running)
             }
             Spacer(minLength: 0)
-            if monitor.busy {
-                ProgressView().controlSize(.small).scaleEffect(0.7)
-            }
         }
+        .disabled(monitor.busy)
+    }
+}
+
+/// Shown while a grab or drop is running.
+///
+/// Taking over means switching the container to another worktree, which is
+/// tens of seconds of real work — installing dependencies and restarting the
+/// app. Saying so, with a number, is the difference between waiting and
+/// wondering whether it has hung.
+struct BusyBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.6)
+                .frame(width: 12, height: 12)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message + "…")
+                    .font(.system(size: 11, weight: .medium))
+                Text("Switching the container usually takes about 30 seconds, "
+                     + "or up to a minute the first time a branch is used.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 9)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: Design.corner))
     }
 }
 

@@ -9,6 +9,10 @@ import SwiftUI
 /// look reads as a foreign object.
 enum Design {
     static let popoverWidth: CGFloat = 320
+
+    /// Beyond this the popover scrolls. Chosen to stay comfortably inside the
+    /// working area of the smallest laptop display Apple still ships.
+    static let maxPopoverHeight: CGFloat = 520
     static let corner: CGFloat = 8
     static let rowSpacing: CGFloat = 6
     static let sectionSpacing: CGFloat = 14
@@ -125,21 +129,29 @@ struct PositionBadge: View {
 /// A duration in words tells you the number; the bar tells you the shape of it
 /// without reading. It turns orange near the end, which is the only moment the
 /// number actually demands attention.
+///
+/// Drawn with a scaled capsule rather than a GeometryReader over two shapes.
+/// A menu bar window sizes itself to its content, and GeometryReader reports
+/// the size it is *offered* — inside a self-sizing window that risks a layout
+/// feedback loop. scaleEffect needs no measurement, so the bar cannot influence
+/// the height of the window that contains it.
 struct LeaseBar: View {
     let elapsed: Double
     let runningOut: Bool
 
+    private var remaining: Double { max(0, min(1, 1 - elapsed)) }
+
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
+        Capsule()
+            .fill(.quaternary)
+            .frame(height: 3)
+            .overlay(alignment: .leading) {
                 Capsule()
                     .fill(runningOut ? Color.orange : Color.accentColor)
-                    .frame(width: max(2, geometry.size.width * (1 - elapsed)))
+                    .scaleEffect(x: remaining, anchor: .leading)
             }
-        }
-        .frame(height: 3)
-        .animation(.easeOut(duration: 0.35), value: elapsed)
+            .accessibilityLabel("Time remaining on this hold")
+            .accessibilityValue("\(Int(remaining * 100)) percent")
     }
 }
 

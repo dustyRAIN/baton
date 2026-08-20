@@ -23,14 +23,20 @@ final class BatonMonitor {
     private var timer: Timer?
     /// True while a grab or drop is in flight, so the UI can show it.
     private(set) var busy = false
+
+    /// What that work is, in words. A bare spinner on an action that can take
+    /// half a minute reads as a hang.
+    private(set) var busyMessage: String?
     private let interval: TimeInterval = 2
 
     init() {}
 
     /// A monitor with fixed contents and no polling, for rendering snapshots.
-    init(preview containers: [ContainerStatus]) {
+    init(preview containers: [ContainerStatus], busy busyMessage: String? = nil) {
         self.containers = containers
         self.installed = true
+        self.busy = busyMessage != nil
+        self.busyMessage = busyMessage
     }
 
     func start() {
@@ -68,18 +74,24 @@ final class BatonMonitor {
     }
 
     func grab(_ container: String) {
-        perform { await BatonClient.performGrab(container: container, note: "taken from the menu bar") }
+        perform("Taking over \(container)") {
+            await BatonClient.performGrab(container: container, note: "taken from the menu bar")
+        }
     }
 
     func drop(_ container: String) {
-        perform { await BatonClient.performDrop(container: container) }
+        perform("Releasing \(container)") {
+            await BatonClient.performDrop(container: container)
+        }
     }
 
-    private func perform(_ action: @escaping @Sendable () async -> String?) {
+    private func perform(_ message: String, _ action: @escaping @Sendable () async -> String?) {
         busy = true
+        busyMessage = message
         Task {
             let failure = await action()
             busy = false
+            busyMessage = nil
             if let failure { lastError = failure }
             refresh()
         }
