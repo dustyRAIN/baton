@@ -327,6 +327,42 @@ stop_child() {
     child_pid=""
 }
 
+# explain_prepare_failure turns a failed install into something actionable.
+#
+# Reads the log from the byte offset prepare started at. A bare "failed" sends
+# people hunting for a bug in baton, when the real reason is sitting in a log
+# that is mostly progress bars. These are the failures that are nothing to do
+# with the branch being switched to, and that nobody guesses from the outside.
+explain_prepare_failure() {
+    local excerpt
+    # Bounded to the tail: an install can log megabytes of progress, and the
+    # error is always at the end.
+    excerpt=$(tail -c "+$(($1 + 1))" "$LOG_FILE" 2>/dev/null | tail -c 65536 | tr -d '\0')
+
+    case "$excerpt" in
+        *ERR_PNPM_FETCH_401* | *"Unauthorized - 401"* | *"401 Unauthorized"* | *" E401"*)
+            warn "the package registry refused a download with 401." \
+                "Registry tokens usually come from the environment the container started with," \
+                "so a container left up long enough ends up holding an expired one." \
+                "Recreate the container to pick up a fresh token."
+            ;;
+        *ERR_PNPM_FETCH_403* | *"Forbidden - 403"* | *" E403"*)
+            warn "the package registry refused a download with 403." \
+                "The container's credentials are being accepted but are not allowed to fetch this package."
+            ;;
+        *ERR_PNPM_OUTDATED_LOCKFILE* | *"frozen-lockfile"* | *"lockfile does not satisfy"*)
+            warn "the lockfile does not match this branch's manifest, so a frozen install cannot run." \
+                "This one is the branch's fault: commit an updated lockfile."
+            ;;
+        *ENOSPC* | *"no space left on device"*)
+            warn "the container ran out of disk while installing dependencies."
+            ;;
+        *ETIMEDOUT* | *ENOTFOUND* | *EAI_AGAIN* | *ECONNRESET*)
+            warn "the package registry could not be reached. This is a network problem, not the branch."
+            ;;
+    esac
+}
+
 start_tree() {
     local tree="$1"
 
@@ -371,8 +407,11 @@ start_tree() {
     baton_wait_deps
 
     baton_log "preparing $tree"
+    local prepare_from
+    prepare_from=$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)
     if ! baton_prepare >>"$LOG_FILE" 2>&1; then
         baton_log "prepare failed in $tree"
+        explain_prepare_failure "$prepare_from"
         set_status failed
         return 1
     fi

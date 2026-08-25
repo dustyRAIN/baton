@@ -172,13 +172,41 @@ type managedContainer struct {
 
 // installSupervisor drops the embedded script into the container's code root,
 // where the bind mount makes it visible inside the container immediately.
+//
+// Written to a temporary file and renamed over the target rather than written
+// in place. On a container that is already running, this file is the script
+// bash is executing: bash reads a script incrementally and seeks back to a
+// saved byte offset, so truncating and rewriting underneath it can drop it into
+// the middle of a line. A rename swaps the directory entry and leaves the
+// running process on the old inode, which is what makes re-running init on a
+// live container safe. The new script takes effect the next time it starts.
 func installSupervisor(codeRoot string) error {
 	controlDir := filepath.Join(codeRoot, docker.ControlDir)
 	if err := os.MkdirAll(controlDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", controlDir, err)
 	}
 	scriptPath := filepath.Join(controlDir, "supervisor.sh")
-	if err := os.WriteFile(scriptPath, supervisor.Script, 0o755); err != nil {
+
+	// Same directory, so the rename cannot cross a filesystem boundary.
+	temporary, err := os.CreateTemp(controlDir, "supervisor.sh.*")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", scriptPath, err)
+	}
+	tempPath := temporary.Name()
+	defer os.Remove(tempPath)
+
+	if _, err := temporary.Write(supervisor.Script); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write %s: %w", scriptPath, err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", scriptPath, err)
+	}
+	// CreateTemp makes the file 0600; the container runs it directly.
+	if err := os.Chmod(tempPath, 0o755); err != nil {
+		return fmt.Errorf("write %s: %w", scriptPath, err)
+	}
+	if err := os.Rename(tempPath, scriptPath); err != nil {
 		return fmt.Errorf("write %s: %w", scriptPath, err)
 	}
 	return nil

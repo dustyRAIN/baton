@@ -18,7 +18,8 @@ func swapTo(stateStore *store.Store, container *docker.Container, worktree *tree
 		fmt.Fprintf(stderr, "baton: %v\n", err)
 		return exitError
 	}
-	if serving, _ := container.Serving(); serving == wanted {
+	serving, status := container.Serving()
+	if serving == wanted && status == "ready" {
 		markServing(stateStore, container.Name, worktree.Path)
 		return exitOK
 	}
@@ -28,10 +29,24 @@ func swapTo(stateStore *store.Store, container *docker.Container, worktree *tree
 		return exitError
 	}
 
-	fmt.Fprintf(stderr, "baton: switching %s to %s\n", container.Name, worktree.Label)
-	if _, err := container.RequestTree(worktree.Path); err != nil {
-		fmt.Fprintf(stderr, "baton: %v\n", err)
-		return exitError
+	// The right tree with a dead app is not the same as being served, and
+	// saying so was the difference between "grab did nothing" and a container
+	// that comes back. finishTake already drew this distinction; grab and the
+	// menu bar's take-over came through here and did not, so both reported
+	// success against a dev server that had failed to start.
+	if serving == wanted {
+		fmt.Fprintf(stderr, "baton: %s is already on %s but not running (%s) — restarting it\n",
+			container.Name, worktree.Label, status)
+		if err := container.RequestRestart(); err != nil {
+			fmt.Fprintf(stderr, "baton: %v\n", err)
+			return exitError
+		}
+	} else {
+		fmt.Fprintf(stderr, "baton: switching %s to %s\n", container.Name, worktree.Label)
+		if _, err := container.RequestTree(worktree.Path); err != nil {
+			fmt.Fprintf(stderr, "baton: %v\n", err)
+			return exitError
+		}
 	}
 	if err := container.WaitReady(wanted, swapTimeout, pollInterval); err != nil {
 		fmt.Fprintf(stderr, "baton: %v\n", err)
