@@ -268,18 +268,39 @@ baton_health() {
 # way to actually match it would be a downgrade, which destroys data. So the
 # rule is: go forward automatically, never backward, and say loudly when the
 # tree and the database disagree.
+
+# alembic_revision runs an alembic subcommand and returns just the revision.
+#
+# Taking the first line is not safe. alembic prints the revision on stdout, and
+# so does whatever logging the project's env.py installs — one repo here writes
+# ANSI-coloured lines around every migration call, so the first line was a log
+# timestamp. That never matched the head, and baton warned about a schema drift
+# that did not exist, on every single switch.
+#
+# So: strip colour, then take the first line that is nothing but a revision,
+# optionally followed by alembic's "(head)" marker. Anything unrecognised
+# yields an empty string, which the caller already treats as "do not compare"
+# — a missing warning is recoverable, a false one teaches people to ignore all
+# of them.
+alembic_revision() {
+    alembic "$1" 2>/dev/null | awk -v esc="$(printf '\033')" '
+        { gsub(esc "\\[[0-9;]*[a-zA-Z]", "") }
+        /^[0-9a-zA-Z_]+( \(head[^)]*\))?[ \t]*$/ { print $1; exit }
+    '
+}
+
 alembic_migrate() {
     local before after
-    before=$(alembic current 2>/dev/null | head -1 | awk '{print $1}')
+    before=$(alembic_revision current)
 
     if ! alembic upgrade head >>"$LOG_FILE" 2>&1; then
         baton_log "alembic upgrade failed"
         return 1
     fi
 
-    after=$(alembic current 2>/dev/null | head -1 | awk '{print $1}')
+    after=$(alembic_revision current)
     local head
-    head=$(alembic heads 2>/dev/null | head -1 | awk '{print $1}')
+    head=$(alembic_revision heads)
 
     if [ -n "$head" ] && [ -n "$after" ] && [ "$after" != "$head" ]; then
         warn "database is at $after but this tree expects $head — the schema is ahead of the branch. Migration-dependent results are not trustworthy. Fixing it means a downgrade, which is destructive, so baton will not do it."
