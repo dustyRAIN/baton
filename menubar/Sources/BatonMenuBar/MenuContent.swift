@@ -46,10 +46,6 @@ struct MenuBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.sectionSpacing) {
-            if let message = monitor.busyMessage {
-                BusyBanner(message: message)
-            }
-
             if let error = monitor.lastError {
                 Banner(symbol: "exclamationmark.triangle.fill", tint: .orange, text: error)
             }
@@ -95,6 +91,12 @@ struct ContainerCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
+
+            // Inside the card, not above the list: with more than one container
+            // a banner at the top cannot say which one it belongs to.
+            if let message = monitor.busyMessage(for: container.container) {
+                BusyBanner(message: message)
+            }
 
             if health.warrantsBanner {
                 Banner(symbol: health.symbol, tint: health.tint, text: troubleText)
@@ -171,7 +173,10 @@ struct ContainerCard: View {
 
             Spacer(minLength: 0)
         }
-        .disabled(monitor.busy)
+        // Only this container's own controls. They are independent queues on
+        // independent containers, so switching one is no reason to freeze the
+        // other — which is what a single app-wide flag used to do.
+        .disabled(monitor.isBusy(container.container))
     }
 }
 

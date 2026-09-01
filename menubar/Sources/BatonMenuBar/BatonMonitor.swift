@@ -21,12 +21,15 @@ final class BatonMonitor {
     private(set) var installed = BatonClient.executable != nil
 
     private var timer: Timer?
-    /// True while a grab or drop is in flight, so the UI can show it.
-    private(set) var busy = false
 
-    /// What that work is, in words. A bare spinner on an action that can take
-    /// half a minute reads as a hang.
-    private(set) var busyMessage: String?
+    /// What each container is in the middle of, in words, while a grab or drop
+    /// runs. A bare spinner on an action that can take half a minute reads as
+    /// a hang, so the words are the point.
+    ///
+    /// Keyed by container rather than a single flag. Containers are the unit
+    /// baton queues, and two of them have nothing to do with each other — one
+    /// switching trees is no reason the other cannot.
+    private(set) var busyContainers: [String: String] = [:]
     private let interval: TimeInterval = 2
 
     init() {}
@@ -35,8 +38,17 @@ final class BatonMonitor {
     init(preview containers: [ContainerStatus], busy busyMessage: String? = nil) {
         self.containers = containers
         self.installed = true
-        self.busy = busyMessage != nil
-        self.busyMessage = busyMessage
+        if let busyMessage, let first = containers.first {
+            self.busyContainers = [first.container: busyMessage]
+        }
+    }
+
+    func isBusy(_ container: String) -> Bool {
+        busyContainers[container] != nil
+    }
+
+    func busyMessage(for container: String) -> String? {
+        busyContainers[container]
     }
 
     func start() {
@@ -58,10 +70,9 @@ final class BatonMonitor {
             lastError = BatonClient.ClientError.notInstalled.errorDescription
             return
         }
-        // A grab can outlast several poll ticks. Skipping while one is in flight
-        // keeps the menu from flickering between stale and fresh readings.
-        guard !busy else { return }
-
+        // Polling continues during a grab. It used to stop, which froze both
+        // containers' readings while either one switched; and the status a swap
+        // reports mid-flight ("starting") is worth showing, not worth hiding.
         Task {
             switch await BatonClient.fetchStatus() {
             case .success(let fetched):
@@ -112,7 +123,7 @@ final class BatonMonitor {
     /// is how you get a specific branch in front of you to test yourself.
     func grab(_ container: String, worktree: WorktreeOption? = nil) {
         let target = worktree.map { " on \($0.label)" } ?? ""
-        perform("Taking over \(container)\(target)") {
+        perform(container, "Taking over \(container)\(target)") {
             await BatonClient.performGrab(container: container,
                                           worktree: worktree?.label,
                                           note: "taken from the menu bar")
@@ -120,18 +131,20 @@ final class BatonMonitor {
     }
 
     func drop(_ container: String) {
-        perform("Releasing \(container)") {
+        perform(container, "Releasing \(container)") {
             await BatonClient.performDrop(container: container)
         }
     }
 
-    private func perform(_ message: String, _ action: @escaping @Sendable () async -> String?) {
-        busy = true
-        busyMessage = message
+    private func perform(_ container: String, _ message: String,
+                         _ action: @escaping @Sendable () async -> String?) {
+        // Ignore a second request for the same container; the CLI would only
+        // queue behind the first, and the buttons are disabled anyway.
+        guard !isBusy(container) else { return }
+        busyContainers[container] = message
         Task {
             let failure = await action()
-            busy = false
-            busyMessage = nil
+            busyContainers[container] = nil
             if let failure { lastError = failure }
             refresh()
         }
