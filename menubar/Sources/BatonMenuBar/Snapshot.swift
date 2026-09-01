@@ -27,6 +27,10 @@ enum Snapshot {
             ("07-empty", []),
             ("08-two-containers", [Samples.heldWithQueue, Samples.secondFree]),
             ("09-busy", [Samples.free]),
+            // The one that matters with more than one container: web is mid
+            // switch, api must still be usable. A single app-wide busy flag
+            // greyed out both and put the banner above neither.
+            ("10-one-of-two-busy", [Samples.heldWithQueue, Samples.secondFree]),
         ]
 
         let root = URL(fileURLWithPath: directory)
@@ -35,7 +39,7 @@ enum Snapshot {
         for (name, containers) in cases {
             for scheme in [ColorScheme.light, .dark] {
                 let monitor = BatonMonitor(preview: containers,
-                                           busy: name == "09-busy" ? "Taking over web" : nil)
+                                           busy: name.hasSuffix("busy") ? "Taking over web" : nil)
                 let view = MenuBody(monitor: monitor)
                     .padding(14)
                     .frame(width: Design.popoverWidth)
