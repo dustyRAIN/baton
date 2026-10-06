@@ -246,3 +246,22 @@ func entries(t *testing.T, dir string) int {
 	}
 	return len(list)
 }
+
+func TestAppOutputReachesBothTheLogAndDockerLogs(t *testing.T) {
+	// docker logs shows the container's stdout. Writing app output only to the
+	// log file left it showing nothing but baton's own lines.
+	f := newFixture(t)
+	f.mkdir(".baton")
+
+	out := f.run(nil, `LOG_FILE="$BATON_CODE/.baton/supervisor.log"; exec 3>&1
+( echo "compiled successfully" ) > >(to_console) 2>&1 &
+wait $!; sleep 0.2`)
+
+	if !strings.Contains(out, "compiled successfully") {
+		t.Errorf("app output should reach stdout, got:\n%s", out)
+	}
+	logged, err := os.ReadFile(filepath.Join(f.code, ".baton/supervisor.log"))
+	if err != nil || !strings.Contains(string(logged), "compiled successfully") {
+		t.Errorf("app output should still be in the log file, got %q (%v)", logged, err)
+	}
+}
