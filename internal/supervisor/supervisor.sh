@@ -66,6 +66,11 @@ baton_log() {
     printf '%s\n' "$line" >&3
 }
 
+# to_console is the redirection target for hook and app output: the log file
+# for baton's own diagnosis, and the container's stdout so `docker logs` still
+# shows the build and the server the way it did before baton.
+to_console() { tee -a "$LOG_FILE" >&3; }
+
 set_status() { printf '%s\n' "$1" >"$STATUS_FILE"; }
 set_serving() { printf '%s\n' "$1" >"$SERVING_FILE"; }
 
@@ -304,7 +309,7 @@ alembic_migrate() {
     local before after
     before=$(alembic_revision current)
 
-    if ! alembic upgrade head >>"$LOG_FILE" 2>&1; then
+    if ! alembic upgrade head > >(to_console) 2>&1; then
         baton_log "alembic upgrade failed"
         return 1
     fi
@@ -560,7 +565,9 @@ start_tree() {
     baton_log "preparing $tree"
     local prepare_from
     prepare_from=$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)
-    if ! baton_prepare >>"$LOG_FILE" 2>&1; then
+    if ! baton_prepare > >(to_console) 2>&1; then
+        # The failure is read back from the log, so let tee finish writing it.
+        wait "$!" 2>/dev/null
         baton_log "prepare failed in $tree"
         explain_prepare_failure "$prepare_from"
         set_status failed
@@ -577,7 +584,7 @@ start_tree() {
 
     baton_log "starting the app in $tree"
     set -m
-    ( cd "$tree" && baton_start ) >>"$LOG_FILE" 2>&1 &
+    ( cd "$tree" && baton_start ) > >(to_console) 2>&1 &
     child_pid=$!
     set +m
 
