@@ -142,3 +142,23 @@ func writeControl(t *testing.T, container *Container, name, contents string) {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }
+
+func TestHostPathInvertsContainerPath(t *testing.T) {
+	container := &Container{Name: "web", CodeRoot: "/Users/someone/repo", CodeMount: "/code"}
+	cases := map[string]string{
+		"/code":                     "/Users/someone/repo",
+		"/code/.worktrees/feature":  "/Users/someone/repo/.worktrees/feature",
+		"/code/.worktrees/feature/": "/Users/someone/repo/.worktrees/feature",
+	}
+	for containerPath, want := range cases {
+		got, err := container.HostPath(containerPath)
+		if err != nil || got != want {
+			t.Errorf("HostPath(%q) = %q, %v; want %q", containerPath, got, err, want)
+		}
+	}
+	for _, outside := range []string{"/codebase/x", "/pnpm/store", "relative"} {
+		if got, err := container.HostPath(outside); err == nil {
+			t.Errorf("HostPath(%q) = %q, but it is not under the code mount", outside, got)
+		}
+	}
+}

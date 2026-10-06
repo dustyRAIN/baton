@@ -121,6 +121,12 @@ func runGuard(arguments []string, stdout, stderr io.Writer) int {
 		return allow(stdout, "")
 	}
 
+	if live, err := docker.Inspect(*containerFlag); err == nil {
+		if reason := strayInstall(live, input.ToolInput.Command); reason != "" {
+			return deny(stdout, reason)
+		}
+	}
+
 	workingDir := *treeFlag
 	if workingDir == "" {
 		workingDir = input.CWD
@@ -179,6 +185,51 @@ func needsContainer(input hookInput, pattern *regexp.Regexp) bool {
 		return false
 	}
 	return pattern.MatchString(command)
+}
+
+// dependencyInstall matches commands that populate node_modules. Adding one
+// package counts too: outside the shared store it installs everything else
+// alongside it.
+var dependencyInstall = regexp.MustCompile(`(?i)\b(pnpm\s+(install|i|add)|npm\s+(ci|install|i)|yarn\s+(install|add))(\s|$|['";&|)])`)
+
+// installDirectory finds where in the container an install will run: the exec's
+// working directory flag, else a cd inside the command.
+var installDirectory = regexp.MustCompile(`(?:\s-w\s*|\s--workdir[=\s]\s*|\bcd\s+)['"]?([^\s'";&|]+)`)
+
+// strayInstall reports why an install into a tree the container is not serving
+// should be blocked, or "" if it should not. Only the serving tree has the
+// shared store mounted at node_modules. Anywhere else the install writes a full
+// private copy of the dependencies, gigabytes each, onto the host. The
+// supervisor installs into the store itself on every switch, so a session never
+// needs to.
+func strayInstall(container *docker.Container, command string) string {
+	if !dependencyInstall.MatchString(command) {
+		return ""
+	}
+	serving, _ := container.Serving()
+	if serving == "" {
+		return ""
+	}
+	match := installDirectory.FindStringSubmatch(command)
+	if match == nil {
+		return ""
+	}
+	hostPath, err := container.HostPath(match[1])
+	if err != nil {
+		return ""
+	}
+	target, err := tree.Resolve(hostPath)
+	if err != nil {
+		return ""
+	}
+	wanted, err := container.ContainerPath(target.Path)
+	if err != nil || wanted == serving {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s is not being served by %s, so its node_modules is not the shared store and this install would write a full private copy of the dependencies to disk. "+
+			"The supervisor installs into the shared store whenever it switches trees: run `baton take %s --wait` instead.",
+		target.Label, container.Name, container.Name)
 }
 
 // servingMismatch reports why a holder should not trust the container, or "" if
