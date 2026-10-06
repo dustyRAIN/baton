@@ -41,6 +41,7 @@ NOTES_FILE="$BATON_CONTROL/notes"
 LOG_FILE="$BATON_CONTROL/supervisor.log"
 STORE_ROOT="$BATON_CONTROL/store"
 CACHE_ROOT="$BATON_CONTROL/cache"
+TRASH_ROOT="$BATON_CONTROL/trash"
 STRATEGY_FILE="$BATON_CONTROL/strategy.sh"
 
 READY_TIMEOUT="${BATON_READY_TIMEOUT:-900}"
@@ -49,6 +50,7 @@ mkdir -p "$BATON_CONTROL" "$STORE_ROOT" "$CACHE_ROOT"
 
 child_pid=""
 serving_tree=""
+serving_fingerprint=""
 
 export BATON_CODE BATON_CONTROL
 
@@ -134,6 +136,15 @@ baton_share_into() {
 
     mkdir -p "$target" "$BATON_STORE"
     if is_mounted "$target"; then return 0; fi
+
+    # Anything already in the directory is an install of the tree's own, made
+    # outside baton. The mount hides it without freeing it, so a full copy of
+    # the dependencies would sit on disk where nobody looks. The main clone is
+    # the exception: its directory is the adopted store itself.
+    if [ "$(readlink -f "$target")" != "$BATON_STORE" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+        warn "$target already holds its own install, which the shared store is about to hide." \
+            "It is a full copy of the dependencies taking disk space for nothing. Delete it from the host."
+    fi
 
     local error
     baton_log "sharing $BATON_STORE into $target"
@@ -310,6 +321,124 @@ alembic_migrate() {
     fi
 }
 
+# ---------------------------------------------------------------- garbage collection
+
+# Stores are keyed by lockfile, and caches by tree, so both outlive what they
+# were made for: every lockfile change leaves a full copy of the old
+# dependencies behind, and every removed worktree leaves its build cache. Left
+# alone they grow until the disk fills, at which point Docker Desktop stops
+# the VM. After each successful switch, anything no live tree can use goes.
+
+# live_trees prints every tree the container can serve: the main clone and each
+# linked worktree git still knows about.
+#
+# A worktree records its location as a host path. Inside the container that
+# only resolves once rewritten onto BATON_CODE, and without BATON_HOST_CODE the
+# rewrite is guesswork — a tree that looks gone may just be unreadable — so it
+# fails and the caller keeps everything.
+live_trees() {
+    [ -d "$BATON_CODE/.git" ] || return 1
+    printf '%s\n' "$BATON_CODE"
+
+    local gitdir path
+    for gitdir in "$BATON_CODE"/.git/worktrees/*/gitdir; do
+        [ -f "$gitdir" ] || continue
+        path=$(cat "$gitdir")
+        path="${path%/.git}"
+        if [[ "$path" == "$BATON_CODE"/* ]]; then
+            :
+        elif [ -n "${BATON_HOST_CODE:-}" ] && [[ "$path" == "$BATON_HOST_CODE"/* ]]; then
+            path="$BATON_CODE${path#"$BATON_HOST_CODE"}"
+        elif [ -n "${BATON_HOST_CODE:-}" ]; then
+            # Outside the code root, so the container could never serve it.
+            continue
+        else
+            return 1
+        fi
+        [ -d "$path" ] && printf '%s\n' "$path"
+    done
+    return 0
+}
+
+# release_mounts lazily unmounts everything bound from a store or cache.
+#
+# Trees keep their mounts after the app moves on, and baton_share_into reuses a
+# mount it finds, so a tree still bound to a discarded store would go on using
+# it. mountinfo's fourth field is the source path within its filesystem, which
+# for a bind of a shared directory ends in the path under the code root.
+release_mounts() {
+    local suffix="${1#"$BATON_CODE"}" root point
+    [ -r /proc/self/mountinfo ] || return 0
+    while read -r _ _ _ root point _; do
+        root=$(printf '%b' "$root")
+        case "$root" in
+            *"$suffix" | *"$suffix"/*)
+                point=$(printf '%b' "$point")
+                baton_log "unmounting $point"
+                umount -l "$point" 2>/dev/null
+                ;;
+        esac
+    done </proc/self/mountinfo
+}
+
+# discard takes an entry out of use at once and deletes it in the background.
+#
+# A store is hundreds of thousands of files on a shared filesystem, and
+# deleting one in the foreground would hold up the next switch for minutes. A
+# rename within the control directory is instant.
+discard() {
+    local entry="$1" why="$2"
+    release_mounts "$entry"
+    if [ -L "$entry" ]; then
+        # An adopted main clone: drop the link, never what it points at.
+        rm -f "$entry" || return 1
+    else
+        mkdir -p "$TRASH_ROOT"
+        mv "$entry" "$TRASH_ROOT/${entry##*/}.$(date +%s).$$" || return 1
+    fi
+    baton_log "discarded $why"
+}
+
+empty_trash() {
+    [ -d "$TRASH_ROOT" ] || return 0
+    [ -n "$(ls -A "$TRASH_ROOT" 2>/dev/null)" ] || return 0
+    rm -rf "${TRASH_ROOT:?}"/* &
+}
+
+collect_garbage() {
+    [ "${BATON_GC:-1}" = "0" ] && return 0
+
+    local trees
+    if ! trees=$(live_trees); then
+        baton_log "skipping garbage collection: worktree paths cannot be mapped into the container"
+        return 0
+    fi
+
+    # The serving tree keeps the store it started with even if its lockfile
+    # has changed since: the running app is using it.
+    local keep_stores=" $serving_fingerprint " keep_caches=" " tree
+    while IFS= read -r tree; do
+        keep_stores+="$(BATON_TREE="$tree" BATON_STACK="$(detect_stack "$tree")" baton_fingerprint) "
+        keep_caches+="$(tree_slug "$tree") "
+    done <<<"$trees"
+
+    local entry name
+    for entry in "$STORE_ROOT"/*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        name="${entry##*/}"
+        [[ "$keep_stores" == *" $name "* ]] && continue
+        discard "$entry" "store $name: no tree has that lockfile any more"
+    done
+    for entry in "$CACHE_ROOT"/*; do
+        [ -e "$entry" ] || continue
+        name="${entry##*/}"
+        [[ "$keep_caches" == *" $name "* ]] && continue
+        discard "$entry" "cache $name: that tree is gone"
+    done
+
+    empty_trash
+}
+
 # ---------------------------------------------------------------- state machine
 
 # wait_for_port_release blocks until nothing is listening on the app port.
@@ -405,6 +534,7 @@ start_tree() {
 
     local fingerprint
     fingerprint=$(baton_fingerprint)
+    serving_fingerprint="$fingerprint"
     export BATON_STORE="$STORE_ROOT/$fingerprint"
     export BATON_CACHE="$CACHE_ROOT/$(tree_slug "$tree")"
     mkdir -p "$BATON_CACHE"
@@ -451,7 +581,7 @@ start_tree() {
     child_pid=$!
     set +m
 
-    wait_ready
+    wait_ready && collect_garbage
 }
 
 wait_ready() {
@@ -518,6 +648,8 @@ if [ -n "${BATON_HOST_CODE:-}" ] && [ "$BATON_HOST_CODE" != "$BATON_CODE" ]; the
 fi
 
 baton_log "supervisor started, watching $CURRENT_FILE (port ${BATON_PORT:-none})"
+# A delete cut short by a container restart.
+empty_trash
 start_tree "$(cat "$CURRENT_FILE")"
 
 while true; do

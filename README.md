@@ -368,6 +368,13 @@ Hooks run with the worktree as their working directory and these available:
 | `baton_log <text>` | write to the supervisor log |
 | `note <text>` | surface something to a human in `baton status` |
 
+Stores and caches are garbage-collected each time a tree comes up healthy. A
+store survives while some live worktree's fingerprint names it, or it is the
+one being served; a cache survives while its worktree exists. Anything else is
+deleted, since each store is a full copy of the dependencies. Collection is
+skipped when worktree paths cannot be mapped into the container (no
+`BATON_HOST_CODE`), and `BATON_GC=0` turns it off.
+
 A Python service with a database and a dependency, for example:
 
 ```bash

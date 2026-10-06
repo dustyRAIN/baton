@@ -295,6 +295,17 @@ func (container *Container) ContainerPath(hostPath string) (string, error) {
 	return filepath.ToSlash(filepath.Join(container.CodeMount, relative)), nil
 }
 
+// HostPath is the inverse of ContainerPath: it maps a path the container sees
+// back to where it lives on the host.
+func (container *Container) HostPath(containerPath string) (string, error) {
+	cleaned := filepath.ToSlash(filepath.Clean(containerPath))
+	mount := filepath.ToSlash(filepath.Clean(container.CodeMount))
+	if container.CodeMount == "" || (cleaned != mount && !strings.HasPrefix(cleaned, mount+"/")) {
+		return "", fmt.Errorf("%s is outside %s in container %s", containerPath, container.CodeMount, container.Name)
+	}
+	return filepath.Join(container.CodeRoot, filepath.FromSlash(strings.TrimPrefix(cleaned, mount))), nil
+}
+
 // RequestTree asks the supervisor to serve a different worktree by writing the
 // path it should switch to. Returns the container-side path that was requested.
 func (container *Container) RequestTree(hostTreePath string) (string, error) {
