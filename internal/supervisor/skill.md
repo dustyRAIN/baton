@@ -94,7 +94,7 @@ baton line cmp-client      # just the queue
 | `baton grab` / `baton drop` | Human override, optionally on a named worktree. **Not for you to run.** |
 | `baton trees <container>` | Worktrees the container can be switched to. |
 
-`--tree` names a worktree explicitly; it defaults to the current directory.
+`--tree <path>` names the worktree when your cwd isn't it (default: the cwd). take/check/pass/renew resolve it against the cwd and walk up to the nearest `.git`, so pass the absolute path: a bare name from the repo root silently resolves to the main clone. The guard judges the Bash call's cwd, not a `cd` or `-w` inside the command; if that isn't your worktree, prefix each container command with `baton check --tree <abs worktree> <container> && `.
 Exit code 2 always means "no". Exit 1 means something broke.
 
 ## Do not
